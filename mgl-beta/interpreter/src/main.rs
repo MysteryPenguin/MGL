@@ -1,13 +1,15 @@
-pub mod functions;
+pub mod args_functions;
+pub mod lexer;
+pub mod scanner;
 
 use std::{env, process::exit};
-use crate::functions::{read_file, run_prompt};
+use crate::args_functions::{read_file, run_prompt};
 
 fn main() {
     let args: Vec<String> = env::args().collect();
 
     if args.len() > 2 {
-        println!("Usage: Neon [script]");
+        println!("Usage: MGL [script]");
         exit(64);
     } else if args.len() == 2 {
         match read_file(&args[1]) {
