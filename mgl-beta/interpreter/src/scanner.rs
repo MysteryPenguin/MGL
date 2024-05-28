@@ -1,3 +1,13 @@
+use std::collections::HashMap;
+
+static mut KEYWORDS: HashMap<String, TokenType> = HashMap::new();
+
+fn insert(key: String, value: TokenType) {
+    unsafe {
+        KEYWORDS.insert(key, value);
+    }
+}
+
 pub struct Scanner {
     source: String,
     tokens: Vec<Token>,
@@ -17,7 +27,7 @@ impl Scanner {
         }
     }
 
-    pub fn scan_tokens(&self) -> Result<Vec<Token>, String> {
+    pub fn scan_tokens(&mut self) -> Result<Vec<Token>, String> {
         let mut errors: Vec<String> = Vec::new();
         while !self.is_at_end() {
             self.start = self.current;
@@ -49,7 +59,7 @@ impl Scanner {
         self.current >= self.source.len()
     }
 
-    fn scan_token(&self) -> Result<Token, String> {
+    fn scan_token(&mut self) -> Result<Token, String> {
         let c = self.advance();
 
         match c {
@@ -113,9 +123,16 @@ impl Scanner {
                 self.line += 1;
             }
             '"' => self.string()?,
+            'o' => {
+                if self.matches_char('r') {
+                    self.add_token(TokenType::Or);
+                }
+            }
             _ => {
                 if self.is_digit(c) {
                     self.number()
+                } else if self.is_alpha(c) {
+                    self.identifier();
                 } else {
                     return Err(format!("Unexpected character at line {}: {}", self.line, c));
                 }
@@ -123,6 +140,23 @@ impl Scanner {
         }
 
         todo!()
+    }
+
+    fn is_alpa_num(&self, c: char) -> bool {
+        return self.is_alpha(c) || self.is_digit(c);
+    }
+
+    fn is_alpha(&self, c: char) -> bool {
+        return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_';
+    }
+
+    fn identifier(&mut self) {
+        let peek = self.peek();
+        while self.is_alpa_num(peek) {
+            self.advance();
+        }
+
+        self.add_token(TokenType::Identifier);
     }
 
     fn peek_next(&self) -> char {
@@ -138,15 +172,16 @@ impl Scanner {
         return c >= '0' && c <= '9';
     }
 
-    fn number(&self) {
+    fn number(self: &mut Self) {
+        let peek = self.peek();
         let mut float: String = String::new();
-        while self.is_digit(self.peek()) {
+        while self.is_digit(peek) {
             self.advance();
         }
         if self.peek() == '.' && self.is_digit(self.peek_next()) {
             self.advance();
 
-            while self.is_digit(self.peek()) {
+            while self.is_digit(peek) {
                 self.advance();
             }
         }
@@ -168,7 +203,7 @@ impl Scanner {
         chars[self.current]
     }
 
-    fn string(&self) -> Result<(), String> {
+    fn string(&mut self) -> Result<(), String> {
         let mut value = String::new();
 
         while self.peek() != '"' && !self.is_at_end() {
@@ -192,7 +227,7 @@ impl Scanner {
         Ok(())
     }
 
-    fn matches_char(&self, expected: char) -> bool {
+    fn matches_char(&mut self, expected: char) -> bool {
         let chars: Vec<char> = self.source.chars().collect();
 
         if self.is_at_end() {
@@ -214,7 +249,7 @@ impl Scanner {
         c as char
     }
 
-    fn add_token(&self, token_type: TokenType) {
+    fn add_token(&mut self, token_type: TokenType) {
         self.add_token_lit(token_type, None);
     }
 
