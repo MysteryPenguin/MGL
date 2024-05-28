@@ -1,9 +1,10 @@
-pub mod args_functions;
 pub mod lexer;
 pub mod scanner;
 
 use std::{env, process::exit};
-use crate::args_functions::{read_file, run_prompt};
+use std::fs;
+use std::io::{stdin, stdout, BufRead, Write};
+use crate::lexer::lexer;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -26,6 +27,39 @@ fn main() {
                 println!("Error:\n{}", msg);
                 exit(1);
             }
+        }
+    }
+}
+
+pub fn read_file(path: &str) -> Result<(), String> {
+    match fs::read_to_string(path) {
+        Err(msg) => Err(msg.to_string()),
+        Ok(contents) => lexer(&contents),
+    }
+}
+
+pub fn run_prompt() -> Result<(), String> {
+    loop {
+        print!("> ");
+        match stdout().flush() {
+            Ok(_) => (),
+            Err(_) => return Err(String::from("Couldn't flush!")),
+        }
+        let input = stdin();
+        let mut buffer = String::new();
+        let mut handle = input.lock();
+        match handle.read_line(&mut buffer) {
+            Ok(n) => {
+                if n <= 2 {
+                    return Ok(());
+                }
+            },
+            Err(_) => return Err(String::from("Failed to read the line")),
+        }
+        println!("ECHO: {}", buffer);
+        match lexer(&buffer) {
+            Ok(_) => (),
+            Err(msg) => println!("{}", msg),
         }
     }
 }
