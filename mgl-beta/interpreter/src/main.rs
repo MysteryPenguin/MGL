@@ -1,5 +1,7 @@
 pub mod lexer;
 pub mod scanner;
+pub mod expr;
+pub mod generate_ast;
 
 pub static mut ARGS: Vec<String> = Vec::new();
 

@@ -1,21 +1,18 @@
 use crate::scanner::Token;
 
 enum Expr {
-    
+    Binary(Box<Binary>),
+    // Other expressions...
 }
 
 struct Binary {
-    left: Expr,
-    op: Token,
-    right: Expr,
-};
+    left: Box<Expr>,
+    operator: Token,
+    right: Box<Expr>,
+}
 
 impl Binary {
-    fn new(left: Expr, op: Token, right: Expr) -> Self {
-        Self {
-            left,
-            op,
-            right,
-        }
+    fn new(left: Box<Expr>, operator: Token, right: Box<Expr>) -> Self {
+        Self { left, operator, right }
     }
 }
