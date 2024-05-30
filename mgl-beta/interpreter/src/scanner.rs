@@ -1,11 +1,25 @@
 use std::collections::HashMap;
+use crate::ARGS;
 
-static mut KEYWORDS: HashMap<String, TokenType> = HashMap::new();
-
-fn insert(key: String, value: TokenType) {
-    unsafe {
-        KEYWORDS.insert(key, value);
-    }
+fn keywords() -> HashMap<String, TokenType> {
+    let mut keywords: HashMap<String, TokenType> = HashMap::new();
+    keywords.insert(String::from("and"),     TokenType::And);
+    keywords.insert(String::from("class"),   TokenType::Class);
+    keywords.insert(String::from("else"),    TokenType::Else);
+    keywords.insert(String::from("false"),   TokenType::False);
+    keywords.insert(String::from("for"),     TokenType::For);
+    keywords.insert(String::from("fn"),      TokenType::Fn);
+    keywords.insert(String::from("if"),      TokenType::If);
+    keywords.insert(String::from("none"),    TokenType::None);
+    keywords.insert(String::from("or"),      TokenType::Or);
+    keywords.insert(String::from("print"),   TokenType::Print);
+    keywords.insert(String::from("return"),  TokenType::Return);
+    keywords.insert(String::from("super"),   TokenType::Super);
+    keywords.insert(String::from("this"),    TokenType::This);
+    keywords.insert(String::from("true"),    TokenType::True);
+    keywords.insert(String::from("let"),     TokenType::Let);
+    keywords.insert(String::from("while"),   TokenType::While);
+    keywords
 }
 
 pub struct Scanner {
@@ -22,7 +36,7 @@ impl Scanner {
             source: String::from(source),
             tokens: Vec::new(),
             start: 0,
-            current: 0,
+            current: 1,
             line: 1,
         }
     }
@@ -59,20 +73,20 @@ impl Scanner {
         self.current >= self.source.len()
     }
 
-    fn scan_token(&mut self) -> Result<Token, String> {
+    fn scan_token(&mut self) -> Result<(), String> {
         let c = self.advance();
 
         match c {
-            '(' => self.add_token(TokenType::LeftParen),
-            ')' => self.add_token(TokenType::RightParen),
-            '{' => self.add_token(TokenType::LeftBrace),
-            '}' => self.add_token(TokenType::RightBrace),
-            ',' => self.add_token(TokenType::Comma),
-            '.' => self.add_token(TokenType::Dot),
-            ';' => self.add_token(TokenType::Semicolon),
-            '+' => self.add_token(TokenType::Plus),
-            '-' => self.add_token(TokenType::Minus),
-            '*' => self.add_token(TokenType::Star),
+            '(' => Ok(self.add_token(TokenType::LeftParen)),
+            ')' => Ok(self.add_token(TokenType::RightParen)),
+            '{' => Ok(self.add_token(TokenType::LeftBrace)),
+            '}' => Ok(self.add_token(TokenType::RightBrace)),
+            ',' => Ok(self.add_token(TokenType::Comma)),
+            '.' => Ok(self.add_token(TokenType::Dot)),
+            ';' => Ok(self.add_token(TokenType::Semicolon)),
+            '+' => Ok(self.add_token(TokenType::Plus)),
+            '-' => Ok(self.add_token(TokenType::Minus)),
+            '*' => Ok(self.add_token(TokenType::Star)),
             '!' => {
                 let token = if self.matches_char('=') {
                     // !=
@@ -81,7 +95,8 @@ impl Scanner {
                     TokenType::Equal
                 };
                 self.add_token(token);
-            }
+                Ok(())
+            },
             '=' => {
                 let token = if self.matches_char('=') {
                     // !=
@@ -90,6 +105,7 @@ impl Scanner {
                     TokenType::LessEqual
                 };
                 self.add_token(token);
+                Ok(())
             }
             '>' => {
                 let token = if self.matches_char('=') {
@@ -99,6 +115,7 @@ impl Scanner {
                     TokenType::Greater
                 };
                 self.add_token(token);
+                Ok(())
             }
             '<' => {
                 let token = if self.matches_char('=') {
@@ -108,38 +125,48 @@ impl Scanner {
                     TokenType::Less
                 };
                 self.add_token(token);
+                Ok(())
             }
             '/' => {
                 if self.matches_char('/') {
                     while self.peek() != '\n' && !self.is_at_end() {
                         self.advance();
                     }
+                    Ok(())
                 } else {
                     self.add_token(TokenType::Slash);
+                    Ok(())
                 }
             }
-            ' ' | '\r' | '\t' => (),
+            ' ' | '\r' | '\t' => Ok(()),
             '\n' => {
                 self.line += 1;
+                Ok(())
             }
-            '"' => self.string()?,
+            '"' => {
+                self.string()?; 
+                Ok(())
+            },
             'o' => {
                 if self.matches_char('r') {
                     self.add_token(TokenType::Or);
+                    Ok(())
+                } else {
+                    return Err(format!("Unexpected character at line {}: {}.", self.line, c));
                 }
             }
             _ => {
                 if self.is_digit(c) {
-                    self.number()
+                    self.number();
+                    Ok(())
                 } else if self.is_alpha(c) {
                     self.identifier();
+                    Ok(())
                 } else {
                     return Err(format!("Unexpected character at line {}: {}", self.line, c));
                 }
             }
         }
-
-        todo!()
     }
 
     fn is_alpa_num(&self, c: char) -> bool {
@@ -152,11 +179,24 @@ impl Scanner {
 
     fn identifier(&mut self) {
         let peek = self.peek();
+        let mut text = String::new();
+        let keywords = keywords();
+        
         while self.is_alpa_num(peek) {
             self.advance();
         }
 
-        self.add_token(TokenType::Identifier);
+        for i in self.start..self.current {
+            text.push(self.source.as_bytes()[i] as char);
+        }
+
+        let mut r#type = keywords.get(&text);
+
+        if r#type.is_none() {
+            r#type = Some(&TokenType::Identifier);
+        }
+
+        self.add_token(r#type.unwrap().clone());
     }
 
     fn peek_next(&self) -> char {
@@ -180,7 +220,7 @@ impl Scanner {
         }
         if self.peek() == '.' && self.is_digit(self.peek_next()) {
             self.advance();
-
+            
             while self.is_digit(peek) {
                 self.advance();
             }
@@ -200,11 +240,21 @@ impl Scanner {
             return '\0';
         }
 
-        chars[self.current]
+        chars[self.current - 1]
     }
 
     fn string(&mut self) -> Result<(), String> {
         let mut value = String::new();
+        let mut space = String::new();
+        let lenght: usize = self.line
+            .to_string()
+            .len();
+        let mut i = 1;
+
+        while i <= lenght {
+            space.push(' ');
+            i += 1;
+        }
 
         while self.peek() != '"' && !self.is_at_end() {
             if self.peek() == '\n' {
@@ -213,13 +263,20 @@ impl Scanner {
             self.advance();
         }
 
-        if self.is_at_end() {
-            return Err(format!("Unterminated string at line {}.", self.line));
+        if self.is_at_end() && self.peek() != '"' {
+            unsafe {
+                return Err(format!(
+                    "\u{001b}[1;31m000: \u{001b}[1;37mUnterminated string.
+    \u{001b}[38;5;159m--> \u{001b}[0m{}, line {}, caracter {}
+ {} |
+ {} | {}
+ {} |", ARGS[1], self.line, self.current, space, self.line, self.source, space));
+            }
         }
 
         self.advance();
 
-        for i in self.start + 1..self.current - 1 {
+        for i in self.start..self.current - 2 {
             value.push(self.source.as_bytes()[i] as char);
         }
 
@@ -234,7 +291,7 @@ impl Scanner {
             return false;
         }
 
-        if chars[self.current] != expected {
+        if chars[self.current + 1] != expected {
             return false;
         }
 
@@ -243,7 +300,7 @@ impl Scanner {
     }
 
     fn advance(&mut self) -> char {
-        let c = self.source.as_bytes()[self.current];
+        let c = self.source.as_bytes()[self.current - 1];
         self.current += 1;
 
         c as char
@@ -256,7 +313,7 @@ impl Scanner {
     fn add_token_lit(self: &mut Self, token_type: TokenType, literal: Option<LiteralValue>) {
         let mut text = String::new();
         for i in self.start..self.current {
-            text.push(self.source.as_bytes()[i] as char);
+            text.push(self.source.as_bytes()[i - 1] as char);
         }
 
         self.tokens.push(Token {

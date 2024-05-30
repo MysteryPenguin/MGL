@@ -1,6 +1,8 @@
 pub mod lexer;
 pub mod scanner;
 
+pub static mut ARGS: Vec<String> = Vec::new();
+
 use std::{env, process::exit};
 use std::fs;
 use std::io::{stdin, stdout, BufRead, Write};
@@ -9,6 +11,10 @@ use crate::lexer::lexer;
 fn main() {
     let args: Vec<String> = env::args().collect();
 
+    unsafe {
+        ARGS = args.clone();
+    }
+
     if args.len() > 2 {
         println!("Usage: MGL [script]");
         exit(64);
@@ -16,7 +22,7 @@ fn main() {
         match read_file(&args[1]) {
             Ok(_) => exit(0),
             Err(msg) => {
-                println!("Error:\n{}", msg);
+                println!("\u{001b}[1;31mError {}", msg);
                 exit(0);
             }
         }
@@ -24,7 +30,7 @@ fn main() {
         match run_prompt() {
             Ok(_) => exit(0),
             Err(msg) => {
-                println!("Error:\n{}", msg);
+                println!("\u{001b}[1;31mError:\n{}", msg);
                 exit(1);
             }
         }
