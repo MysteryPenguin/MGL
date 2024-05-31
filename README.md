@@ -1,3 +1,3 @@
-<div display="inline"><h1>MGL</h1> <img src="logo.png" alt="MGL-Logo" width="100" height="100"/></div>
+<h1>MGL<img src="logo.png" alt="MGL-Logo" width="100" height="100"/></h1>
 <p>An interpreter programming language</p>
 ## Comming soon...
