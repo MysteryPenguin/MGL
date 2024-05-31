@@ -1,3 +1,3 @@
-<h1>MGL<img src="logo.png" alt="MGL-Logo" width="100" height="100"/></h1>
+<h1>MGL<img src="logo.png" alt="MGL-Logo" width="50" height="50"/></h1>
 <p>An interpreter programming language</p>
 ## Comming soon...
