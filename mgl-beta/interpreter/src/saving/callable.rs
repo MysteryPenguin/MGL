@@ -56,7 +56,7 @@ impl Callable for Function {
     fn call(&self, interpreter: &mut Interpreter, args: &[Value]) -> Result<Value, Error> {
         let mut args_env = HashMap::new();
         for (param, arg) in self.params.iter().zip(args.iter()) {
-            let ident = Identifier::with_type(interpreter, param.0.clone(), param.1.clone(), arg.clone())?;
+            let ident = Identifier::with_type(interpreter, param.0.clone(), param.1.clone(), arg.clone(), false)?;
             args_env.insert(
                 param.0.name.clone(),
                 (
@@ -81,7 +81,7 @@ impl Callable for Function {
             env.values.insert(
                 this_symbol.name.clone(),
                 (
-                    Identifier::new(interpreter, this_symbol.clone(), *this_val.clone()),
+                    Identifier::new(interpreter, this_symbol.clone(), *this_val.clone(), false),
                     SourceLocation {
                         line: this_symbol.line,
                         col: this_symbol.col,
@@ -93,7 +93,7 @@ impl Callable for Function {
             env.values.insert(
                 this_symbol.name.clone(),
                 (
-                    Identifier::new(interpreter, this_symbol.clone(), this_val.clone()),
+                    Identifier::new(interpreter, this_symbol.clone(), this_val.clone(), false),
                     SourceLocation {
                         line: this_symbol.line,
                         col: this_symbol.col,
@@ -147,7 +147,7 @@ impl Callable for Closure {
     fn call(&self, interpreter: &mut Interpreter, args: &[Value]) -> Result<Value, Error> {
         let mut args_env = HashMap::new();
         for (param, arg) in self.params.iter().zip(args.iter()) {
-            let ident = Identifier::with_type(interpreter, param.0.clone(), param.1.clone(), arg.clone())?;
+            let ident = Identifier::with_type(interpreter, param.0.clone(), param.1.clone(), arg.clone(), false)?;
             args_env.insert(
                 param.0.name.clone(),
                 (

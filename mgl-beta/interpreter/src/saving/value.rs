@@ -137,14 +137,16 @@ pub struct Identifier {
     pub name: Symbol,
     pub r#type: Type,
     pub value: Box<Value>,
+    pub is_pub: bool
 }
 
 impl Identifier {
-    pub fn new(interpreter: &Interpreter, name: Symbol, value: Value) -> Self {
+    pub fn new(interpreter: &Interpreter, name: Symbol, value: Value, is_pub: bool) -> Self {
         Self {
             name,
             r#type: value.to_type(interpreter),
             value: Box::new(value),
+            is_pub
         }
     }
 
@@ -153,6 +155,7 @@ impl Identifier {
         name: Symbol,
         r#type: Type,
         value: Value,
+        is_pub: bool
     ) -> Result<Self, Error> {
         if value.to_type(interpreter) != r#type {
             return Err(interpreter.error_builder.build(
@@ -172,6 +175,7 @@ impl Identifier {
             name,
             r#type,
             value: Box::new(value),
+            is_pub
         })
     }
 
@@ -180,6 +184,7 @@ impl Identifier {
             name: Symbol::new(native_fn.name.clone(), 1337, 1337),
             r#type: Type::Literal(Some(LiteralType::NativeFn)),
             value: Box::new(Value::Literal(Literal::NativeFn(native_fn))),
+            is_pub: true
         }
     }
 }
