@@ -1,5 +1,3 @@
 [workspace]
-members = [
-  "interpreter",
-]
-resolver = "2"
+resolver = "3"
+members = ["interpreter"]
