@@ -40,7 +40,13 @@ fn run_project(path: &str) {
     let src = look_for_dir_error(dir_tree.look_for_dir(&[String::from("."), String::from("src")], 0), "src");
 
     let mut project = Project::new(manifest, src.clone());
-    project.run();
+    match project.run() {
+        Ok(_) => (),
+        Err(err) => {
+            println!("{err}");
+            process::exit(64);
+        }
+    }
 }
 
 fn fs_error<T, P: AsRef<Path> + std::fmt::Debug + Clone>(

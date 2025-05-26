@@ -2,61 +2,28 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::{collections::HashMap, process};
 
-use crate::{Dir, PathTree, interpreter::Interpreter, lexer::Lexer, parser::Parser};
+use crate::{Dir, interpreter::Interpreter, lexer::Lexer, parser::Parser};
 
-use super::{callable::Callable, error::Error, symbol::Symbol, value::Literal};
+use super::{callable::Callable, error::Error, symbol::{SourceLocation, Symbol}, value::Literal};
 
 #[derive(Debug, Clone)]
 pub struct Project {
     pub manifest: ProjectManifest,
-    pub modules: HashMap<String, Interpreter>,
+    pub dir: Dir,
 }
 
 impl Project {
-    pub fn new(manifest: ProjectManifest, dir: Dir) -> Project {
-        let mut project = Project { manifest, modules: HashMap::new() };
-        match project.dir(dir) {
-            Ok(modules) => project.modules = modules,
-            Err(err) => {
-                println!("{err}");
-                process::exit(64);
-            }
+    pub fn new(manifest: ProjectManifest, dir: Dir) -> Self {
+        Self {
+            manifest,
+            dir
         }
-
-        project
     }
 
-    pub fn dir(&self, dir: Dir) -> Result<HashMap<String, Interpreter>, Error> {
-        let mut modules = HashMap::new();
-        for path_tree in dir.content {
-            match path_tree {
-                PathTree::Dir(dir) => {
-                    let child_modules = self.dir(dir)?;
-
-                    child_modules.into_iter().for_each(|(path, interpreter)| {
-                        modules.insert(path, interpreter);
-                    });
-                }
-                PathTree::File(file) => {
-                    let path = file.path.join("/");
-
-                    let tokens = Lexer::new(file.clone()).scan_tokens()?;
-                    let decls = Parser::new(tokens, file.clone()).parse()?;
-                    let mut interpreter = Interpreter::new(file.clone(), self.clone());
-                    interpreter.interpret(decls)?;
-
-                    modules.insert(path, interpreter);
-                }
-            }
-        }
-
-        Ok(modules)
-    }
-
-    pub fn run(&mut self) {
+    pub fn run(&mut self) -> Result<(), Error> {
         match self.manifest.r#type {
-            ProjectType::Lib => match self.modules.get(&String::from("./src/lib.mgl")) {
-                Some(_) => (),
+            ProjectType::Lib => match self.dir.look_for_file(&[String::from("src"), String::from("lib.mgl")], 0) {
+                Some(_) => Ok(()),
                 None => {
                     println!(
                         "\x1b[1;31merror\x1b[1;39m: 'lib.mgl' does not exist in this library\x1b[0m"
@@ -64,28 +31,30 @@ impl Project {
                     process::exit(64);
                 }
             },
-            ProjectType::Normal => match self.modules.get_mut(&String::from("./src/main.mgl")) {
-                Some(interpreter) => {
-                    match interpreter.enviroment.get(Symbol::new(String::from("main"), 0, 0), interpreter) {
-                        Ok(ident) => match *ident.value {
-                            super::value::Value::Literal(Literal::Fn { name: _, id, instance: _ }) => {
-                                let main_function = interpreter.get_function(id).clone();
-                                if main_function.arity(interpreter) != 0 {
-                                    println!("\x1b[1;31merror\x1b[1;39m: function main must have 0 arguments\x1b[0m");
-                                    process::exit(64);
-                                }
+            ProjectType::Normal => match self.dir.look_for_file(&[String::from("src"), String::from("main.mgl")], 0) {
+                Some(file) => {
+                    let tokens = Lexer::new(file.clone()).scan_tokens()?;
+                    let decls = Parser::new(tokens, file.clone()).parse()?;
+                    let mut interpreter = Interpreter::new(file.clone(), self.clone());
+                    interpreter.interpret(decls)?;
 
-                                match main_function.call(interpreter, &[]) {
-                                    Ok(_) => (),
-                                    Err(err) => {
-                                        println!("{err}");
-                                        process::exit(64);
+                    match interpreter.enviroment.get(Symbol::new(String::from("main"), 0, 0), &interpreter) {
+                        Ok(ident) => {
+                            match *ident.value {
+                                super::value::Value::Literal(Literal::Fn { name: _, id, instance: _ }) => {
+                                    let main_fn = interpreter.get_function(id).clone();
+
+                                    if main_fn.arity(&mut interpreter) != 0 {
+                                        return Err(interpreter.error_builder.build(super::error::ErrorType::Runtime, String::from("function 'main' must have 0 arguments"), SourceLocation { line: ident.name.line, col: ident.name.col }));
                                     }
+
+                                    main_fn.call(&mut interpreter, &[])?;
+                                    return Ok(())
                                 }
-                            },
-                            _ => ()
-                        },
-                        Err(_) => ()
+                                _ => return Err(interpreter.error_builder.build(super::error::ErrorType::Runtime, String::from("item 'main' is not a function"), SourceLocation { line: ident.name.line, col: ident.name.col }))
+                            }
+                        }
+                        Err(_) => return Ok(())
                     }
                 },
                 None => {

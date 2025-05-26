@@ -136,17 +136,15 @@ impl Literal {
 pub struct Identifier {
     pub name: Symbol,
     pub r#type: Type,
-    pub value: Box<Value>,
-    pub is_pub: bool
+    pub value: Box<Value>
 }
 
 impl Identifier {
-    pub fn new(interpreter: &Interpreter, name: Symbol, value: Value, is_pub: bool) -> Self {
+    pub fn new(interpreter: &Interpreter, name: Symbol, value: Value) -> Self {
         Self {
             name,
             r#type: value.to_type(interpreter),
-            value: Box::new(value),
-            is_pub
+            value: Box::new(value)
         }
     }
 
@@ -154,8 +152,7 @@ impl Identifier {
         interpreter: &Interpreter,
         name: Symbol,
         r#type: Type,
-        value: Value,
-        is_pub: bool
+        value: Value
     ) -> Result<Self, Error> {
         if value.to_type(interpreter) != r#type {
             return Err(interpreter.error_builder.build(
@@ -174,8 +171,7 @@ impl Identifier {
         Ok(Self {
             name,
             r#type,
-            value: Box::new(value),
-            is_pub
+            value: Box::new(value)
         })
     }
 
@@ -183,8 +179,7 @@ impl Identifier {
         Self {
             name: Symbol::new(native_fn.name.clone(), 1337, 1337),
             r#type: Type::Literal(Some(LiteralType::NativeFn)),
-            value: Box::new(Value::Literal(Literal::NativeFn(native_fn))),
-            is_pub: true
+            value: Box::new(Value::Literal(Literal::NativeFn(native_fn)))
         }
     }
 }

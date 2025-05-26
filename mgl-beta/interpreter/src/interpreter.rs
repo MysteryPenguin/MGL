@@ -1,20 +1,9 @@
 use std::collections::HashMap;
 
 use crate::{
-    File,
-    enviroment::Enviroment,
-    saving::{
-        callable::{Class, Closure, Function, INIT, Instance, NativeFn, as_callable},
-        error::{Error, ErrorBuilder, ErrorType},
-        expr::Expr,
-        project::Project,
-        stmt::{ClassDecl, Decl, FnDecl, Stmt, VarDecl},
-        symbol::{SourceLocation, Symbol},
-        token::Token,
-        token_type::TokenType,
-        r#type::{LiteralType, Type},
-        value::{Identifier, Imported, Literal, Value},
-    },
+    enviroment::Enviroment, saving::{
+        callable::{as_callable, Class, Closure, Function, Instance, NativeFn, INIT}, error::{Error, ErrorBuilder, ErrorType}, expr::Expr, project::Project, stmt::{ClassDecl, Decl, FnDecl, Stmt, VarDecl}, symbol::{SourceLocation, Symbol}, token::Token, token_type::TokenType, r#type::{LiteralType, Type}, value::{Identifier, Literal, Value}
+    }, File
 };
 
 #[derive(Clone, Debug)]
@@ -28,13 +17,13 @@ pub struct Interpreter {
     pub instances: HashMap<u64, Instance>,
     pub closures: HashMap<u64, Closure>,
     pub error_builder: ErrorBuilder,
-    pub project: Project,
+    pub project: Project
 }
 
 impl Interpreter {
     pub fn interpret(&mut self, decls: Vec<Decl>) -> Result<(), Error> {
         for decl in decls {
-            self.execute_decl(decl, false)?;
+            self.execute_decl(decl)?;
         }
 
         Ok(())
@@ -48,14 +37,14 @@ impl Interpreter {
         Ok(())
     }
 
-    fn execute_decl(&mut self, decl: Decl, is_pub: bool) -> Result<(), Error> {
+    fn execute_decl(&mut self, decl: Decl) -> Result<(), Error> {
         match decl {
             Decl::Var(VarDecl { sym, init, r#type }) => match (init, r#type) {
                 (Some(expr), Some(r#type)) => {
                     let value = self.evaluate(expr)?;
                     self.enviroment.define(
                         sym.clone(),
-                        Identifier::with_type(self, sym, r#type, value, is_pub)?,
+                        Identifier::with_type(self, sym, r#type, value)?,
                     );
                 }
                 (None, Some(r#type)) => self.enviroment.define(
@@ -64,18 +53,17 @@ impl Interpreter {
                         self,
                         sym.clone(),
                         r#type,
-                        Value::Literal(Literal::None),
-                        is_pub,
+                        Value::Literal(Literal::None)
                     )?,
                 ),
                 (Some(expr), None) => {
                     let value = self.evaluate(expr)?;
                     self.enviroment
-                        .define(sym.clone(), Identifier::new(self, sym, value, is_pub));
+                        .define(sym.clone(), Identifier::new(self, sym, value));
                 }
                 (None, None) => self.enviroment.define(
                     sym.clone(),
-                    Identifier::new(self, sym, Value::Literal(Literal::None), is_pub),
+                    Identifier::new(self, sym, Value::Literal(Literal::None)),
                 ),
             },
             Decl::Fn(FnDecl { name, params, body }) => {
@@ -99,8 +87,7 @@ impl Interpreter {
                             name: name.clone(),
                             id,
                             instance: None,
-                        }),
-                        is_pub,
+                        })
                     ),
                 );
             }
@@ -117,8 +104,7 @@ impl Interpreter {
                         Value::Literal(Literal::Class {
                             name: sym.clone(),
                             id,
-                        }),
-                        is_pub,
+                        })
                     ),
                 );
 
@@ -159,7 +145,7 @@ impl Interpreter {
                         SourceLocation { line: 1, col: 0 },
                     ));
                 }
-                _ => return self.execute_decl(*decl, true),
+                _ => return self.execute_decl(*decl),
             },
         }
         Ok(())
@@ -192,7 +178,7 @@ impl Interpreter {
                         ));
                     }
                     self.enviroment
-                        .define(sym.clone(), Identifier::new(self, sym, value, false));
+                        .define(sym.clone(), Identifier::new(self, sym, value));
                 }
                 (None, Some(r#type)) => {
                     if r#type != Type::Literal(Some(LiteralType::None)) {
@@ -207,17 +193,17 @@ impl Interpreter {
                     }
                     self.enviroment.define(
                         sym.clone(),
-                        Identifier::new(self, sym, Value::Literal(Literal::None), false),
+                        Identifier::new(self, sym, Value::Literal(Literal::None)),
                     );
                 }
                 (Some(expr), None) => {
                     let value = self.evaluate(expr)?;
                     self.enviroment
-                        .define(sym.clone(), Identifier::new(self, sym, value, false));
+                        .define(sym.clone(), Identifier::new(self, sym, value));
                 }
                 (None, None) => self.enviroment.define(
                     sym.clone(),
-                    Identifier::new(self, sym, Value::Literal(Literal::None), false),
+                    Identifier::new(self, sym, Value::Literal(Literal::None)),
                 ),
             },
             Stmt::Block(stmts) => {
@@ -269,8 +255,7 @@ impl Interpreter {
                             name: name.clone(),
                             id,
                             instance: None,
-                        }),
-                        false,
+                        })
                     ),
                 );
             }
@@ -282,47 +267,6 @@ impl Interpreter {
                 });
             }
             Stmt::Import { imports, file_path } => {
-                let interpreter = match self.project.modules.get(&file_path.name) {
-                    Some(interpreter) => interpreter,
-                    None => {
-                        return Err(self.error_builder.build(
-                            ErrorType::Runtime,
-                            format!("cannot find module {}", file_path.name.clone()),
-                            SourceLocation {
-                                line: file_path.line,
-                                col: file_path.col,
-                            },
-                        ));
-                    }
-                };
-
-                for import in imports {
-                    let ident = interpreter.enviroment.get(import.clone(), interpreter)?;
-
-                    if !ident.is_pub {
-                        return Err(self.error_builder.build(
-                            ErrorType::Runtime,
-                            format!("import '{}' was found but it is private", import.clone()),
-                            SourceLocation {
-                                line: ident.name.line,
-                                col: ident.name.col,
-                            },
-                        ));
-                    }
-
-                    self.enviroment.define(
-                        import.clone(),
-                        Identifier::new(
-                            self,
-                            import.clone(),
-                            Value::Literal(Literal::Imported(Imported {
-                                sym: import,
-                                url: file_path.name.clone(),
-                            })),
-                            false,
-                        ),
-                    );
-                }
             }
         }
 
@@ -402,26 +346,7 @@ impl Interpreter {
             Expr::Assign { sym, value } => {
                 let lit = self.evaluate(*value)?;
 
-                if let Value::Literal(Literal::Imported(ref import)) = lit {
-                    let interpreter = self.project.modules.get_mut(&import.url).unwrap();
-
-                    let is_pub = interpreter
-                        .enviroment
-                        .get(sym.clone(), &interpreter)?
-                        .is_pub;
-                    interpreter.enviroment.assign(
-                        sym.clone(),
-                        Identifier::new(&interpreter, sym.clone(), lit.clone(), is_pub),
-                        &interpreter.clone(),
-                    )?;
-                } else {
-                    let is_pub = self.enviroment.get(sym.clone(), self)?.is_pub;
-                    self.enviroment.assign(
-                        sym.clone(),
-                        Identifier::new(self, sym, lit.clone(), is_pub),
-                        &self.clone(),
-                    )?;
-                }
+                self.enviroment.assign(sym.clone(), Identifier::new(self, sym, lit.clone()), &self.clone())?;
 
                 Ok(lit)
             }
@@ -446,7 +371,7 @@ impl Interpreter {
                     }
                 }
 
-                return Ok(self.evaluate(*right)?);
+                return self.evaluate(*right);
             }
             Expr::Call {
                 callee,
@@ -808,7 +733,7 @@ impl Interpreter {
             instances: HashMap::new(),
             closures: HashMap::new(),
             error_builder: ErrorBuilder(file.clone()),
-            project,
+            project
         }
     }
 }
