@@ -1,0 +1,16 @@
+pub let y = 2;
+
+fn e() {
+    return "Hello, world!";
+}
+
+pub fn a(x: number) {
+    let c = e();
+    print c;
+}
+
+pub class F {
+    init(x: number) {
+        this.x = x;
+    }
+}

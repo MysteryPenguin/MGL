@@ -2,10 +2,10 @@ use std::{collections::HashMap, fmt};
 
 use super::{
     error::*,
+    literal::{Identifier, Literal, Value},
     stmt::Stmt,
     symbol::{SourceLocation, Symbol},
     r#type::Type,
-    value::{Identifier, Literal, Value},
 };
 use crate::{enviroment::Enviroment, interpreter::Interpreter};
 
@@ -56,7 +56,13 @@ impl Callable for Function {
     fn call(&self, interpreter: &mut Interpreter, args: &[Value]) -> Result<Value, Error> {
         let mut args_env = HashMap::new();
         for (param, arg) in self.params.iter().zip(args.iter()) {
-            let ident = Identifier::with_type(interpreter, param.0.clone(), param.1.clone(), arg.clone())?;
+            let ident = Identifier::with_type(
+                interpreter,
+                param.0.clone(),
+                param.1.clone(),
+                arg.clone(),
+                false,
+            )?;
             args_env.insert(
                 param.0.name.clone(),
                 (
@@ -81,7 +87,7 @@ impl Callable for Function {
             env.values.insert(
                 this_symbol.name.clone(),
                 (
-                    Identifier::new(interpreter, this_symbol.clone(), *this_val.clone()),
+                    Identifier::new(interpreter, this_symbol.clone(), *this_val.clone(), false),
                     SourceLocation {
                         line: this_symbol.line,
                         col: this_symbol.col,
@@ -93,7 +99,7 @@ impl Callable for Function {
             env.values.insert(
                 this_symbol.name.clone(),
                 (
-                    Identifier::new(interpreter, this_symbol.clone(), this_val.clone()),
+                    Identifier::new(interpreter, this_symbol.clone(), this_val.clone(), false),
                     SourceLocation {
                         line: this_symbol.line,
                         col: this_symbol.col,
@@ -118,11 +124,10 @@ impl Callable for Function {
                 if self.is_initializer {
                     match &self.instance {
                         Some(this_val) => Ok(*this_val.clone()),
-                        None => Err(interpreter.error_builder.build(
-                            ErrorType::Runtime,
-                            format!("could not find instance of this"),
-                            SourceLocation { line: 1, col: 0 },
-                        )),
+                        None => Err(interpreter.error_builder.build(ErrorType::CouldNotFind {
+                            item: String::from("instance of this"),
+                            loc: [SourceLocation { line: 1, col: 0 }],
+                        })),
                     }
                 } else {
                     Ok(Value::Literal(Literal::Void))
@@ -137,7 +142,7 @@ pub struct Closure {
     pub id: u64,
     pub params: Vec<(Symbol, Type)>,
     pub body: Stmt,
-    pub closure: Enviroment
+    pub closure: Enviroment,
 }
 
 impl Callable for Closure {
@@ -147,7 +152,13 @@ impl Callable for Closure {
     fn call(&self, interpreter: &mut Interpreter, args: &[Value]) -> Result<Value, Error> {
         let mut args_env = HashMap::new();
         for (param, arg) in self.params.iter().zip(args.iter()) {
-            let ident = Identifier::with_type(interpreter, param.0.clone(), param.1.clone(), arg.clone())?;
+            let ident = Identifier::with_type(
+                interpreter,
+                param.0.clone(),
+                param.1.clone(),
+                arg.clone(),
+                false,
+            )?;
             args_env.insert(
                 param.0.name.clone(),
                 (
@@ -179,11 +190,10 @@ impl Callable for Closure {
 
         match return_val {
             Some(val) => Ok(val),
-            None => Ok(Value::Literal(Literal::Void))
+            None => Ok(Value::Literal(Literal::Void)),
         }
     }
 }
-
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Class {
@@ -252,25 +262,30 @@ impl Instance {
                         }))),
                     }));
                 }
-                Err(interpreter.error_builder.build(
-                    ErrorType::Runtime,
-                    format!(
-                        "'{}' instance has no '{}' attribute",
-                        self.class_name.name, attr.name
-                    ),
-                    SourceLocation {
-                        line: attr.line,
+                Err(interpreter.error_builder.build(ErrorType::Undefined {
+                    ident: attr.name,
+                    kind: String::from("attribute"),
+                    on: format!("instance of type '{}'", self.class_name.name),
+                    loc: [SourceLocation {
                         col: attr.col,
-                    },
-                ))
+                        line: attr.line,
+                    }],
+                }))
             }
         }
     }
 }
 
-pub fn as_callable(interpreter: &Interpreter, value: &Value) -> Option<Box<dyn Callable>> {
+pub fn as_callable(
+    interpreter: &Interpreter,
+    value: &Value,
+    loc: SourceLocation,
+) -> Result<(String, Box<dyn Callable>), Error> {
     match value {
-        Value::Literal(Literal::NativeFn(f)) => Some(Box::new(f.clone())),
+        Value::Literal(Literal::NativeFn(f)) => Ok((
+            interpreter.error_builder.0.path.join("/"),
+            Box::new(f.clone()),
+        )),
         Value::Literal(Literal::Fn {
             name: _,
             id,
@@ -279,10 +294,33 @@ pub fn as_callable(interpreter: &Interpreter, value: &Value) -> Option<Box<dyn C
             let f = interpreter.get_function(*id);
             let mut f_copy = f.clone();
             f_copy.instance = instance.clone();
-            Some(Box::new(f_copy))
+            Ok((interpreter.error_builder.0.path.join("/"), Box::new(f_copy)))
         }
-        Value::Literal(Literal::Class { name: _, id }) => Some(Box::new(interpreter.get_class(*id).clone())),
-        Value::Literal(Literal::Closure(id)) => Some(Box::new(interpreter.get_closure(*id).clone())),
-        _ => None,
+        Value::Literal(Literal::Class { name: _, id }) => Ok((
+            interpreter.error_builder.0.path.join("/"),
+            Box::new(interpreter.get_class(*id).clone()),
+        )),
+        Value::Literal(Literal::Closure(id)) => Ok((
+            interpreter.error_builder.0.path.join("/"),
+            Box::new(interpreter.get_closure(*id).clone()),
+        )),
+        Value::Imported(import) => {
+            let imp_interpreter = interpreter.get_interpreter(
+                &import.url,
+                SourceLocation {
+                    line: import.sym.line,
+                    col: import.sym.col,
+                },
+            )?;
+            let value = *imp_interpreter
+                .enviroment
+                .get(&import.sym, &interpreter.error_builder)?
+                .value;
+            as_callable(imp_interpreter, &value, loc)
+        }
+        _ => Err(interpreter.error_builder.build(ErrorType::NotCallable {
+            r#type: value.to_type(interpreter).to_string(),
+            loc: [loc],
+        })),
     }
 }

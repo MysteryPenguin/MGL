@@ -1,174 +1,88 @@
-use crate::File;
+use crate::error::{ErrorType, MGLError};
+use crate::loc::SourceLoc;
 use crate::saving::expr::ClosureDecl;
-use crate::saving::r#type::{FnType, LiteralType, Type};
+use crate::saving::pattern::Pattern;
+use crate::saving::r#type::{FnType, Type};
 
 use crate::saving::{
-    error::{Error, ErrorBuilder, ErrorType},
     expr::Expr,
-    stmt::{ClassDecl, Decl, FnDecl, Stmt, VarDecl},
-    symbol::{SourceLocation, Symbol},
+    item::{FnItem, GlobalVarItem, Item, ObjectTemplItem},
+    literal::Literal,
+    stmt::Stmt,
+    symbol::Symbol,
     token::Token,
     token_type::TokenType,
-    value::{Literal, Value},
 };
 
 pub struct Parser {
     tokens: Vec<Token>,
     current: usize,
-    error_builder: ErrorBuilder,
 }
 
 impl Parser {
-    pub fn new(tokens: Vec<Token>, file: File) -> Self {
-        Self {
-            tokens,
-            current: 0,
-            error_builder: ErrorBuilder(file),
-        }
+    pub fn new(tokens: Vec<Token>) -> Self {
+        Self { tokens, current: 0 }
     }
 
-    pub fn parse(&mut self) -> Result<Vec<Decl>, Error> {
-        let mut decls: Vec<Decl> = Vec::new();
+    pub fn parse(&mut self) -> Result<Vec<Decl>, MGLError> {
+        let mut items: Vec<Item> = Vec::new();
 
         while !self.is_at_end() {
-            let decl = self.declaration_global()?;
-            decls.push(decl);
+            let item = self.item()?;
+            items.push(decl);
         }
 
-        Ok(decls)
+        Ok(items)
     }
 
-    fn expression(&mut self) -> Result<Expr, Error> {
-        return self.assignment();
+    fn expression(&mut self) -> Result<Expr, MGLError> {
+        self.assignment()
     }
 
-    fn declaration_global(&mut self) -> Result<Decl, Error> {
-        if self.match_tokens(&[TokenType::Pub]) {
-            let decl = self.declaration_global()?;
+    fn item(&mut self) -> Result<Item, MGLError> {
+        let public = self.match_tokens(&[TokenType::Pub]);
 
-            match decl {
-                Decl::Class(class_decl) => return Ok(Decl::Pub(Box::new(Decl::Class(class_decl)))),
-                Decl::Fn(fn_decl) => return Ok(Decl::Pub(Box::new(Decl::Fn(fn_decl)))),
-                Decl::Var(var_decl) => return Ok(Decl::Pub(Box::new(Decl::Var(var_decl)))),
-                Decl::Pub(_) => {
-                    return Err(self.error_builder.build(
-                        ErrorType::Syntax,
-                        String::from("a public declaration is not allowed in a public declaration"),
-                        self.peek().to_source_location(),
-                    ));
-                }
-            }
-        }
         if self.match_tokens(&[TokenType::Class]) {
-            return Ok(Decl::Class(self.class_decl()?));
+            return Ok(Item::Class(self.object_templ_item(public)?));
+        }
+        if self.match_tokens(&[TokenType::Struct]) {
+            return Ok(Item::Struct(self.object_templ_item(public)?));
         }
         if self.match_tokens(&[TokenType::Fn]) {
-            return Ok(Decl::Fn(self.function("function".to_owned())?));
+            return Ok(Item::Fn(self.function(public)?));
         }
-        if self.match_tokens(&[TokenType::Let]) {
-            return Ok(Decl::Var(self.var_declaration()?));
+        if self.match_tokens(&[TokenType::Const]) {
+            return Ok(Item::GlobalVar(self.global_var_item(public)?));
         }
 
-        Err(self.error_builder.build(
-            ErrorType::Syntax,
-            String::from("statements cannot be executed in the global scope"),
-            self.peek().to_source_location(),
-        ))
+        Err(MGLError {
+            error_type: ErrorType::StructureError,
+            msg: String::from("only items are allowed in the global scope."),
+            loc: Some(self.peek().to_source_loc()),
+        })
     }
 
-    fn declaration(&mut self) -> Result<Stmt, Error> {
-        if self.match_tokens(&[TokenType::Fn]) {
-            return Ok(Stmt::FnDecl(self.function("function".to_owned())?));
-        }
-        if self.match_tokens(&[TokenType::Let]) {
-            return Ok(Stmt::Var(self.var_declaration()?));
-        }
-        if self.match_tokens(&[TokenType::Class]) {
-            return Err(self.error_builder.build(
-                ErrorType::Syntax,
-                String::from("class declarations are not allowed in a block statement"),
-                self.peek().to_source_location(),
-            ));
-        }
-        if self.match_tokens(&[TokenType::Pub]) {
-            return Err(self.error_builder.build(
-                ErrorType::Syntax,
-                String::from("public declarations are not allowed in a block statement"),
-                self.peek().to_source_location(),
-            ));
-        }
-
-        self.stmt()
-    }
-
-    fn function(&mut self, kind: String) -> Result<FnDecl, Error> {
+    fn function(&mut self, public: bool) -> Result<FnItem, MGLError> {
         let name = self
             .consume(
-                TokenType::Identifier,
-                format!("expect identifier after {kind} name"),
+                TokenType::Ident,
+                String::from("expect identifier after function keyword"),
             )?
             .to_symbol();
-        self.consume(
-            TokenType::LeftParen,
-            format!("expect '(' after {kind} name"),
-        )?;
-
-        let mut params: Vec<(Symbol, Type)> = Vec::new();
-
-        if !self.check(&TokenType::RightParen) {
-            loop {
-                if params.len() >= 255 {
-                    let token = self.peek();
-                    return Err(self.error_builder.build(
-                        ErrorType::Overflow,
-                        format!("function '{name}' cannot have more than 255 parameters"),
-                        SourceLocation {
-                            line: token.line,
-                            col: token.col,
-                        },
-                    ));
-                }
-                let ident = self
-                    .consume(TokenType::Identifier, String::from("expect parameter name"))?
-                    .to_symbol();
-                self.consume(
-                    TokenType::Colon,
-                    String::from(
-                        "expect ':' because type anotation is required in function parameters",
-                    ),
-                )?;
-                let r#type = self.match_type()?;
-
-                params.push((ident, r#type));
-
-                if !self.match_tokens(&[TokenType::Comma]) {
-                    break;
-                }
-            }
-        }
-        self.consume(
-            TokenType::RightParen,
-            "expect ')' after parameters".to_string(),
-        )?;
-
-        self.consume(
-            TokenType::LeftBrace,
-            format!("expect '{{' before {kind} body"),
-        )?;
-        let body = self.block()?;
-
-        Ok(FnDecl { name, params, body })
     }
 
-    fn stmt(&mut self) -> Result<Stmt, Error> {
+    fn pattern(&mut self) -> Result<Pattern, MGLError> {
+        if self.match_tokens(&[TokenType::LeftParen]) {}
+    }
+
+    fn tuple_pat(&mut self) -> Result<Pattern, MGLError> {}
+
+    fn stmt(&mut self) -> Result<Stmt, MGLError> {
         if self.match_tokens(&[TokenType::For]) {
             return self.for_stmt();
         }
         if self.match_tokens(&[TokenType::If]) {
             return self.if_stmt();
-        }
-        if self.match_tokens(&[TokenType::Print]) {
-            return self.print_stmt();
         }
         if self.match_tokens(&[TokenType::Return]) {
             return self.return_stmt();
@@ -176,25 +90,28 @@ impl Parser {
         if self.match_tokens(&[TokenType::While]) {
             return self.while_stmt();
         }
+
+        let token = self.peek().clone();
         if self.match_tokens(&[TokenType::LeftBrace]) {
-            return Ok(Stmt::Block(self.block()?));
+            return Ok(Stmt::Block(self.block(token.to_source_location())?));
         }
         if self.match_tokens(&[TokenType::Import]) {
-            return self.import_stmt();
+            return Ok(Stmt::Decl(Decl::Import(self.import_stmt()?)));
         }
 
         self.expression_stmt()
     }
 
-    fn import_stmt(&mut self) -> Result<Stmt, Error> {
+    fn import_stmt(&mut self) -> Result<Import, MGLError> {
         let mut imports: Vec<Symbol> = Vec::new();
 
         if !self.match_tokens(&[TokenType::From]) {
             loop {
                 imports.push(
-                    self.consume(
+                    self.consume_expected_kind(
                         TokenType::Identifier,
-                        String::from("expect 'import' identifier"),
+                        String::from("identifier"),
+                        String::from("as import"),
                     )?
                     .to_symbol(),
                 );
@@ -205,14 +122,16 @@ impl Parser {
             }
         }
 
-        self.consume(
+        self.consume_expected_kind(
             TokenType::From,
-            String::from("expect 'from' before file path"),
+            String::from("'from'"),
+            String::from("after imports"),
         )?;
 
-        let file_path_token = self.consume(
+        let file_path_token = self.consume_expected_kind(
             TokenType::String,
-            String::from("expect file path after 'from'"),
+            String::from("file path"),
+            String::from("after from"),
         )?;
         let file_path = Symbol::new(
             file_path_token.literal.unwrap().to_string().unwrap(),
@@ -222,38 +141,38 @@ impl Parser {
 
         self.semicolon();
 
-        Ok(Stmt::Import { imports, file_path })
+        Ok(Import { imports, file_path })
     }
 
-    fn class_decl(&mut self) -> Result<ClassDecl, Error> {
+    fn object_templ_item(&mut self) -> Result<ClassDecl, MGLError> {
         let name = self
-            .consume(TokenType::Identifier, "expect class name".to_string())?
+            .consume_expected_kind(
+                TokenType::Identifier,
+                String::from("class name"),
+                String::from("in class declaration"),
+            )?
             .to_symbol();
-        self.consume(
-            TokenType::LeftBrace,
-            "expect '{' before class body".to_string(),
-        )?;
+        let left_brace =
+            self.consume_expected(TokenType::LeftBrace, '{', String::from("after class body"))?;
 
         let mut methods = Vec::new();
         while !self.check(&TokenType::RightBrace) && !self.is_at_end() {
             methods.push(self.function(String::from("method"))?);
         }
 
-        self.consume(
-            TokenType::RightBrace,
-            "expect '}' after class body".to_string(),
-        )?;
+        self.consume_unclosed(TokenType::RightBrace, '}', left_brace.to_source_location())?;
 
         Ok(ClassDecl { name, methods })
     }
 
-    fn for_stmt(&mut self) -> Result<Stmt, Error> {
-        self.consume(TokenType::LeftParen, "expect '(' after 'for'".to_string())?;
+    fn for_stmt(&mut self) -> Result<Stmt, MGLError> {
+        let left_paren =
+            self.consume_expected(TokenType::LeftParen, '(', String::from("after for"))?;
 
         let initializer = if self.match_tokens(&[TokenType::Semicolon]) {
             None
         } else if self.match_tokens(&[TokenType::Let]) {
-            Some(Stmt::Var(self.var_declaration()?))
+            Some(Stmt::Decl(Decl::Var(self.var_declaration()?)))
         } else {
             Some(self.expression_stmt()?)
         };
@@ -270,9 +189,10 @@ impl Parser {
                 },
             }
         };
-        self.consume(
+        self.consume_expected(
             TokenType::Semicolon,
-            "expect ';' after loop condition".to_string(),
+            ';',
+            String::from("after loop condition"),
         )?;
 
         let increment = if !self.check(&TokenType::RightParen) {
@@ -280,10 +200,7 @@ impl Parser {
         } else {
             None
         };
-        self.consume(
-            TokenType::RightParen,
-            "expected ')' after for clauses".to_string(),
-        )?;
+        self.consume_unclosed(TokenType::RightParen, ')', left_paren.to_source_location())?;
         let mut body = self.stmt()?;
 
         if let Some(increment) = increment {
@@ -301,9 +218,9 @@ impl Parser {
         Ok(body)
     }
 
-    fn while_stmt(&mut self) -> Result<Stmt, Error> {
+    fn while_stmt(&mut self) -> Result<Stmt, MGLError> {
         let condition = self.expression()?;
-        
+
         let body = self.stmt()?;
 
         Ok(Stmt::While {
@@ -312,7 +229,7 @@ impl Parser {
         })
     }
 
-    fn if_stmt(&mut self) -> Result<Stmt, Error> {
+    fn if_stmt(&mut self) -> Result<Stmt, MGLError> {
         let condition = self.expression()?;
 
         let then_branch = Box::new(self.stmt()?);
@@ -329,14 +246,7 @@ impl Parser {
         })
     }
 
-    fn print_stmt(&mut self) -> Result<Stmt, Error> {
-        let value = self.expression()?;
-        self.semicolon();
-
-        Ok(Stmt::Print(value))
-    }
-
-    fn return_stmt(&mut self) -> Result<Stmt, Error> {
+    fn return_stmt(&mut self) -> Result<Stmt, MGLError> {
         let loc = self.previous().to_source_location();
 
         let value = if !self.check(&TokenType::Semicolon) {
@@ -349,47 +259,45 @@ impl Parser {
         Ok(Stmt::Return { loc, value })
     }
 
-    fn expression_stmt(&mut self) -> Result<Stmt, Error> {
+    fn expression_stmt(&mut self) -> Result<Stmt, MGLError> {
         let expr = self.expression()?;
         self.semicolon();
 
         Ok(Stmt::Expr(expr))
     }
 
-    fn block(&mut self) -> Result<Vec<Stmt>, Error> {
+    fn block(&mut self, loc: SourceLocation) -> Result<Vec<Stmt>, MGLError> {
         let mut stmts: Vec<Stmt> = Vec::new();
 
         while !self.check(&TokenType::RightBrace) && !self.is_at_end() {
             stmts.push(self.declaration()?);
         }
 
-        self.consume(
-            TokenType::RightBrace,
-            String::from("expected '}' after block"),
-        )?;
+        self.consume_unclosed(TokenType::RightBrace, '}', loc)?;
 
         Ok(stmts)
     }
 
-    fn match_type(&mut self) -> Result<Type, Error> {
+    fn match_type(&mut self) -> Result<Type, MGLError> {
         let token = self.peek().clone();
         self.advance();
         match token.token_type {
             TokenType::Identifier => Ok(token.to_symbol().to_type()),
             TokenType::LeftParen => Ok(Type::Literal(Some(LiteralType::Fn(self.function_type()?)))),
-            _ => Err(self.error_builder.build(
-                ErrorType::Syntax,
-                String::from("expected type after type declaration"),
-                token.to_source_location(),
-            )),
+            _ => Err(self.MGLError_builder.build(MGLErrorType::ExpectedKind {
+                kind: String::from("type"),
+                message: String::from("after type annotation"),
+                loc: [token.to_source_location()],
+            })),
         }
     }
 
-    fn var_declaration(&mut self) -> Result<VarDecl, Error> {
+    fn var_declaration(&mut self) -> Result<VarDecl, MGLError> {
         let sym = self
-            .consume(
+            .consume_expected_kind(
                 TokenType::Identifier,
-                String::from("expected variable name"),
+                String::from("variable name"),
+                String::from("in var declaration"),
             )?
             .to_symbol();
 
@@ -408,20 +316,18 @@ impl Parser {
         Ok(VarDecl { sym, init, r#type })
     }
 
-    fn function_type(&mut self) -> Result<FnType, Error> {
+    fn function_type(&mut self) -> Result<FnType, MGLError> {
         let mut params = Vec::new();
         if !self.check(&TokenType::RightParen) {
             loop {
                 if params.len() >= 255 {
-                    let token = self.peek();
-                    return Err(self.error_builder.build(
-                        ErrorType::Overflow,
-                        String::from("closure cannot have more than 255 parameters"),
-                        SourceLocation {
-                            line: token.line,
-                            col: token.col,
-                        },
-                    ));
+                    return Err(self.MGLError_builder.build(MGLErrorType::Overflow {
+                        allowed: 255,
+                        value: TryInto::<u32>::try_into(params.len()).unwrap(),
+                        item: String::from("parameters of closures"),
+                        count_type: String::from("count"),
+                        loc: [self.peek().to_source_location()],
+                    }));
                 }
                 let r#type = self.match_type()?;
 
@@ -433,14 +339,12 @@ impl Parser {
             }
         }
 
-        self.consume(
-            TokenType::RightParen,
-            String::from("expect ')' after parameters"),
-        )?;
+        self.consume_expected(TokenType::RightParen, ')', String::from("after parameters"))?;
 
-        self.consume(
+        self.consume_expected_kind(
             TokenType::Arrow,
-            String::from("expected '->' after parameters for function type"),
+            String::from("'->'"),
+            String::from("after parameter types"),
         )?;
 
         let return_type = Box::new(self.match_type()?);
@@ -449,414 +353,6 @@ impl Parser {
             params,
             return_type,
         })
-    }
-
-    fn assignment(&mut self) -> Result<Expr, Error> {
-        let expr = self.or()?;
-
-        if self.match_tokens(&[TokenType::Equal]) {
-            let equals = self.previous();
-            let value = self.assignment()?;
-
-            return match &expr {
-                Expr::Var(sym) => Ok(Expr::Assign {
-                    sym: sym.clone(),
-                    value: Box::new(value),
-                }),
-                Expr::Get { attr, lhs } => Ok(Expr::Set {
-                    lhs: lhs.clone(),
-                    attr: attr.clone(),
-                    rhs: Box::new(value),
-                }),
-
-                _ => {
-                    let token = self.peek();
-                    Err(self.error_builder.build(
-                        ErrorType::Syntax,
-                        format!("invalid assignment target '{}'", equals.lexeme),
-                        SourceLocation {
-                            line: token.line,
-                            col: token.col,
-                        },
-                    ))
-                }
-            };
-        }
-
-        Ok(expr)
-    }
-
-    fn or(&mut self) -> Result<Expr, Error> {
-        let mut expr = self.and()?;
-
-        while self.match_tokens(&[TokenType::Or]) {
-            let operator = self.previous();
-            let right = self.and()?;
-            expr = Expr::Logical {
-                left: Box::new(expr),
-                operator,
-                right: Box::new(right),
-            };
-        }
-
-        Ok(expr)
-    }
-
-    fn and(&mut self) -> Result<Expr, Error> {
-        let mut expr = self.equality()?;
-        while self.match_tokens(&[TokenType::And]) {
-            let operator = self.previous();
-            let right = self.equality()?;
-            expr = Expr::Logical {
-                left: Box::new(expr),
-                operator,
-                right: Box::new(right),
-            };
-        }
-
-        Ok(expr)
-    }
-
-    fn equality(&mut self) -> Result<Expr, Error> {
-        let mut expr = self.comparison()?;
-
-        while self.match_tokens(&[TokenType::BangEqual, TokenType::EqualEqual]) {
-            let operator_token = self.previous();
-            let right = self.comparison()?;
-            expr = Expr::Binary {
-                right: Box::new(right),
-                operator: operator_token,
-                left: Box::new(expr),
-            };
-        }
-
-        Ok(expr)
-    }
-
-    fn comparison(&mut self) -> Result<Expr, Error> {
-        let mut expr = self.term()?;
-
-        while self.match_tokens(&[
-            TokenType::Greater,
-            TokenType::GreaterEqual,
-            TokenType::Less,
-            TokenType::LessEqual,
-        ]) {
-            let operator_token = self.previous();
-            let right = self.term()?;
-            expr = Expr::Binary {
-                right: Box::new(right),
-                operator: operator_token,
-                left: Box::new(expr),
-            };
-        }
-
-        Ok(expr)
-    }
-
-    fn term(&mut self) -> Result<Expr, Error> {
-        let mut expr = self.factor()?;
-        while self.match_tokens(&[TokenType::Minus, TokenType::Plus]) {
-            let operator_token = self.previous();
-            let right = self.factor()?;
-            expr = Expr::Binary {
-                right: Box::new(right),
-                operator: operator_token,
-                left: Box::new(expr),
-            };
-        }
-
-        Ok(expr)
-    }
-
-    fn factor(&mut self) -> Result<Expr, Error> {
-        let mut expr = self.unary()?;
-
-        while self.match_tokens(&[TokenType::Slash, TokenType::Star]) {
-            let operator_token = self.previous();
-            let right = self.unary()?;
-            expr = Expr::Binary {
-                right: Box::new(right),
-                operator: operator_token,
-                left: Box::new(expr),
-            };
-        }
-
-        Ok(expr)
-    }
-
-    fn unary(&mut self) -> Result<Expr, Error> {
-        if self.match_tokens(&[TokenType::Bang, TokenType::Minus]) {
-            let operator_token = self.previous();
-            let expr = self.unary()?;
-            return Ok(Expr::Unary {
-                expr: Box::new(expr),
-                operator: operator_token,
-            });
-        }
-
-        self.call()
-    }
-
-    fn call(&mut self) -> Result<Expr, Error> {
-        let mut expr = self.primary()?;
-
-        loop {
-            if self.match_tokens(&[TokenType::LeftParen]) {
-                return self.finish_call(Box::new(expr));
-            } else if self.match_tokens(&[TokenType::Dot]) {
-                let attr = self
-                    .consume(
-                        TokenType::Identifier,
-                        String::from("expected property name after '.'"),
-                    )?
-                    .to_symbol();
-                expr = Expr::Get {
-                    attr,
-                    lhs: Box::new(expr),
-                };
-            } else {
-                break;
-            }
-        }
-
-        Ok(expr)
-    }
-
-    fn closure(&mut self) -> Result<ClosureDecl, Error> {
-        let mut params: Vec<(Symbol, Type)> = Vec::new();
-
-        if !self.check(&TokenType::RightParen) {
-            loop {
-                if params.len() >= 255 {
-                    let token = self.peek();
-                    return Err(self.error_builder.build(
-                        ErrorType::Overflow,
-                        String::from("closure cannot have more than 255 parameters"),
-                        SourceLocation {
-                            line: token.line,
-                            col: token.col,
-                        },
-                    ));
-                }
-                let ident = self
-                    .consume(TokenType::Identifier, String::from("expect parameter name"))?
-                    .to_symbol();
-                self.consume(
-                    TokenType::Colon,
-                    String::from(
-                        "expect ':' because type anotation is required in function parameters",
-                    ),
-                )?;
-                let r#type = self.match_type()?;
-
-                params.push((ident, r#type));
-
-                if !self.match_tokens(&[TokenType::Comma]) {
-                    break;
-                }
-            }
-        }
-        self.consume(
-            TokenType::RightParen,
-            String::from("expect ')' after parameters"),
-        )?;
-
-        self.consume(TokenType::Arrow, String::from("expect '->' after ')'"))?;
-
-        let body = Box::new(self.stmt()?);
-
-        Ok(ClosureDecl { params, body })
-    }
-
-    fn finish_call(&mut self, callee: Box<Expr>) -> Result<Expr, Error> {
-        let mut args: Vec<Box<Expr>> = Vec::new();
-
-        if !self.check(&TokenType::RightParen) {
-            loop {
-                if args.len() >= 255 {
-                    let token = self.peek();
-                    return Err(self.error_builder.build(
-                        ErrorType::Overflow,
-                        String::from("function cannot have more than 255 parameters"),
-                        SourceLocation {
-                            line: token.line,
-                            col: token.col,
-                        },
-                    ));
-                }
-                args.push(Box::new(self.expression()?));
-
-                if !self.match_tokens(&[TokenType::Comma]) {
-                    break;
-                }
-            }
-        }
-
-        let loc = self
-            .consume(
-                TokenType::RightParen,
-                String::from("expect ')' after arguments"),
-            )?
-            .to_source_location();
-
-        Ok(Expr::Call { callee, loc, args })
-    }
-
-    fn primary(&mut self) -> Result<Expr, Error> {
-        if self.match_tokens(&[TokenType::False]) {
-            let token = self.peek();
-            return Ok(Expr::Literal {
-                lit: Value::Literal(Literal::Bool(false)),
-                loc: SourceLocation {
-                    line: token.line,
-                    col: token.col,
-                },
-            });
-        }
-        if self.match_tokens(&[TokenType::True]) {
-            let token = self.peek();
-            return Ok(Expr::Literal {
-                lit: Value::Literal(Literal::Bool(true)),
-                loc: SourceLocation {
-                    line: token.line,
-                    col: token.col,
-                },
-            });
-        }
-        if self.match_tokens(&[TokenType::None]) {
-            let token = self.peek();
-            return Ok(Expr::Literal {
-                lit: Value::Literal(Literal::None),
-                loc: SourceLocation {
-                    line: token.line,
-                    col: token.col,
-                },
-            });
-        }
-
-        if self.match_tokens(&[TokenType::Number, TokenType::String]) {
-            match self.previous().literal {
-                Some(lit) => {
-                    let previous = self.previous();
-                    return Ok(Expr::Literal {
-                        lit,
-                        loc: SourceLocation {
-                            line: previous.line,
-                            col: previous.col,
-                        },
-                    });
-                }
-                None => {
-                    let token = self.peek();
-                    return Err(self.error_builder.build(
-                        ErrorType::Syntax,
-                        format!("expected string or number '{}'", token.lexeme),
-                        SourceLocation {
-                            line: token.line,
-                            col: token.col,
-                        },
-                    ));
-                }
-            }
-        }
-
-        if self.match_tokens(&[TokenType::This]) {
-            return Ok(Expr::This(self.previous().to_source_location()));
-        }
-
-        if self.match_tokens(&[TokenType::Identifier]) {
-            return Ok(Expr::Var(self.previous().to_symbol()));
-        }
-
-        if self.match_tokens(&[TokenType::LeftParen]) {
-            let start = self.current;
-            match self.closure() {
-                Ok(decl) => {
-                    return Ok(Expr::Closure {
-                        decl,
-                        loc: self.peek().to_source_location(),
-                    });
-                }
-                Err(err) => {
-                    self.current = start;
-                    let expr = self.expression()?;
-                    self.consume(
-                        TokenType::RightParen,
-                        String::from("expect ')' after expression"),
-                    )?;
-                    if self.match_tokens(&[TokenType::Arrow]) {
-                        return Err(err);
-                    }
-                    return Ok(Expr::Group(Box::new(expr)));
-                }
-            }
-        }
-
-        let token = self.peek();
-        Err(self.error_builder.build(
-            ErrorType::Syntax,
-            format!("Expected Expression '{}'", self.peek().lexeme),
-            SourceLocation {
-                line: token.line,
-                col: token.col,
-            },
-        ))
-    }
-
-    fn consume(&mut self, token_type: TokenType, message: String) -> Result<Token, Error> {
-        if self.check(&token_type) {
-            return Ok(self.advance());
-        }
-
-        let token = self.previous();
-
-        Err(self.error_builder.build(
-            ErrorType::Syntax,
-            message,
-            SourceLocation {
-                line: token.line,
-                col: token.col,
-            },
-        ))
-    }
-
-    fn match_tokens(&mut self, token_types: &[TokenType]) -> bool {
-        for token_type in token_types {
-            if self.check(&token_type) {
-                self.advance();
-                return true;
-            }
-        }
-        false
-    }
-
-    fn check(&self, token_type: &TokenType) -> bool {
-        if self.is_at_end() {
-            return false;
-        }
-
-        self.peek().token_type == *token_type
-    }
-
-    fn advance(&mut self) -> Token {
-        if !self.is_at_end() {
-            self.current += 1;
-        }
-
-        return self.previous().clone();
-    }
-
-    fn is_at_end(&self) -> bool {
-        self.peek().token_type == TokenType::EOF
-    }
-
-    fn peek(&self) -> &Token {
-        &self.tokens[self.current]
-    }
-
-    fn previous(&self) -> Token {
-        self.tokens[self.current - 1].clone()
     }
 
     fn semicolon(&mut self) {

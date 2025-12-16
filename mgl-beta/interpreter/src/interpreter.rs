@@ -1,12 +1,24 @@
 use std::collections::HashMap;
 
 use crate::{
-    enviroment::Enviroment, saving::{
-        callable::{as_callable, Class, Closure, Function, Instance, NativeFn, INIT}, error::{Error, ErrorBuilder, ErrorType}, expr::Expr, project::Project, stmt::{ClassDecl, Decl, FnDecl, Stmt, VarDecl}, symbol::{SourceLocation, Symbol}, token::Token, token_type::TokenType, r#type::{LiteralType, Type}, value::{Identifier, Literal, Value}
-    }, File
+    File,
+    enviroment::Enviroment,
+    lexer::Lexer,
+    parser::Parser,
+    saving::{
+        callable::{Class, Closure, Function, INIT, Instance, NativeFn, as_callable},
+        error::{Error, ErrorBuilder, ErrorType},
+        expr::Expr,
+        project::Project,
+        stmt::{ClassDecl, Decl, FnDecl, Import, Stmt, VarDecl},
+        symbol::{SourceLocation, Symbol},
+        token::Token,
+        token_type::TokenType,
+        literal::{Identifier, Imported, Literal, Value},
+    },
 };
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Interpreter {
     pub enviroment: Enviroment,
     pub globals: Enviroment,
@@ -17,13 +29,14 @@ pub struct Interpreter {
     pub instances: HashMap<u64, Instance>,
     pub closures: HashMap<u64, Closure>,
     pub error_builder: ErrorBuilder,
-    pub project: Project
+    pub project: Project,
+    pub modules: HashMap<String, Interpreter>,
 }
 
 impl Interpreter {
     pub fn interpret(&mut self, decls: Vec<Decl>) -> Result<(), Error> {
         for decl in decls {
-            self.execute_decl(decl)?;
+            self.execute_decl(decl, false)?;
         }
 
         Ok(())
@@ -37,14 +50,14 @@ impl Interpreter {
         Ok(())
     }
 
-    fn execute_decl(&mut self, decl: Decl) -> Result<(), Error> {
+    fn execute_decl(&mut self, decl: Decl, is_pub: bool) -> Result<(), Error> {
         match decl {
             Decl::Var(VarDecl { sym, init, r#type }) => match (init, r#type) {
                 (Some(expr), Some(r#type)) => {
                     let value = self.evaluate(expr)?;
                     self.enviroment.define(
                         sym.clone(),
-                        Identifier::with_type(self, sym, r#type, value)?,
+                        Identifier::with_type(self, sym, r#type, value, is_pub)?,
                     );
                 }
                 (None, Some(r#type)) => self.enviroment.define(
@@ -53,17 +66,18 @@ impl Interpreter {
                         self,
                         sym.clone(),
                         r#type,
-                        Value::Literal(Literal::None)
+                        Value::Literal(Literal::None),
+                        is_pub,
                     )?,
                 ),
                 (Some(expr), None) => {
                     let value = self.evaluate(expr)?;
                     self.enviroment
-                        .define(sym.clone(), Identifier::new(self, sym, value));
+                        .define(sym.clone(), Identifier::new(self, sym, value, is_pub));
                 }
                 (None, None) => self.enviroment.define(
                     sym.clone(),
-                    Identifier::new(self, sym, Value::Literal(Literal::None)),
+                    Identifier::new(self, sym, Value::Literal(Literal::None), is_pub),
                 ),
             },
             Decl::Fn(FnDecl { name, params, body }) => {
@@ -87,7 +101,8 @@ impl Interpreter {
                             name: name.clone(),
                             id,
                             instance: None,
-                        })
+                        }),
+                        is_pub,
                     ),
                 );
             }
@@ -104,7 +119,8 @@ impl Interpreter {
                         Value::Literal(Literal::Class {
                             name: sym.clone(),
                             id,
-                        })
+                        }),
+                        is_pub,
                     ),
                 );
 
@@ -137,75 +153,76 @@ impl Interpreter {
 
                 self.classes.insert(id, class);
             }
-            Decl::Pub(decl) => match *decl {
-                Decl::Pub(_) => {
-                    return Err(self.error_builder.build(
-                        ErrorType::Runtime,
-                        String::from("a public declaration is not allowed in a public declaration"),
-                        SourceLocation { line: 1, col: 0 },
-                    ));
+            Decl::Pub(decl) => self.execute_decl(*decl, true)?,
+            Decl::Import(Import {
+                imports,
+                file_path: file_path_sym,
+            }) => {
+                let enviroment = match self.modules.get(&file_path_sym.name) {
+                    Some(interpreter) => interpreter.enviroment.clone(),
+                    None => {
+                        let file_path: Vec<String> =
+                            file_path_sym.name.split("/").map(String::from).collect();
+
+                        match self.project.dir.look_for_file(&file_path, 0) {
+                            Some(file) => {
+                                let tokens = Lexer::new(file.clone()).scan_tokens()?;
+                                let decls = Parser::new(tokens, file.clone()).parse()?;
+                                let mut interpreter =
+                                    Interpreter::new(file.clone(), self.project.clone());
+                                interpreter.interpret(decls)?;
+                                self.modules
+                                    .insert(file_path_sym.name.clone(), interpreter.clone());
+                                interpreter.enviroment
+                            }
+                            None => {
+                                return Err(self.error_builder.build(ErrorType::Undefined {
+                                    ident: file_path.join("/"),
+                                    kind: String::from("module"),
+                                    on: String::from("in this project"),
+                                    loc: [file_path_sym.to_source_loc()],
+                                }));
+                            }
+                        }
+                    }
+                };
+
+                for import in imports {
+                    let ident = enviroment.get(&import, &self.error_builder)?;
+
+                    if !ident.is_pub {
+                        return Err(self.error_builder.build(ErrorType::Undefined {
+                            ident: ident.name.name,
+                            kind: String::from("identifier"),
+                            on: String::new(),
+                            loc: [import.to_source_loc()],
+                        }));
+                    }
+
+                    self.enviroment.define(
+                        import.clone(),
+                        Identifier::new(
+                            self,
+                            import.clone(),
+                            Value::Imported(Imported {
+                                sym: import,
+                                url: file_path_sym.name.clone(),
+                            }),
+                            false,
+                        ),
+                    );
                 }
-                _ => return self.execute_decl(*decl),
-            },
+            }
         }
         Ok(())
     }
 
     pub fn execute(&mut self, stmt: Stmt) -> Result<(), Error> {
         match stmt {
-            Stmt::Print(expr) => {
-                let literal = self.evaluate(expr)?;
-                println!("{literal}")
-            }
             Stmt::Expr(expr) => {
                 self.evaluate(expr)?;
             }
-            Stmt::Var(VarDecl { sym, init, r#type }) => match (init, r#type) {
-                (Some(expr), Some(r#type)) => {
-                    let value = self.evaluate(expr)?;
-                    if value.to_type(self) != r#type {
-                        return Err(self.error_builder.build(
-                            ErrorType::Type,
-                            format!(
-                                "expected value of type '{}'. Found '{}'",
-                                r#type,
-                                value.to_type(self)
-                            ),
-                            SourceLocation {
-                                line: sym.line,
-                                col: sym.col,
-                            },
-                        ));
-                    }
-                    self.enviroment
-                        .define(sym.clone(), Identifier::new(self, sym, value));
-                }
-                (None, Some(r#type)) => {
-                    if r#type != Type::Literal(Some(LiteralType::None)) {
-                        return Err(self.error_builder.build(
-                            ErrorType::Type,
-                            format!("expected value of type '{}'. Found 'none'", r#type,),
-                            SourceLocation {
-                                line: sym.line,
-                                col: sym.col,
-                            },
-                        ));
-                    }
-                    self.enviroment.define(
-                        sym.clone(),
-                        Identifier::new(self, sym, Value::Literal(Literal::None)),
-                    );
-                }
-                (Some(expr), None) => {
-                    let value = self.evaluate(expr)?;
-                    self.enviroment
-                        .define(sym.clone(), Identifier::new(self, sym, value));
-                }
-                (None, None) => self.enviroment.define(
-                    sym.clone(),
-                    Identifier::new(self, sym, Value::Literal(Literal::None)),
-                ),
-            },
+            Stmt::Decl(decl) => self.execute_decl(decl, false)?,
             Stmt::Block(stmts) => {
                 self.execute_block(stmts, Enviroment::from(self.enviroment.clone()))?
             }
@@ -215,7 +232,7 @@ impl Interpreter {
                 else_branch,
             } => {
                 let condition_eval = self.evaluate(condition.clone())?;
-                let loc = self.get_loc(condition.clone());
+                let loc = Self::get_loc(condition.clone());
 
                 if self.is_truthy(condition_eval, loc)? == Value::Literal(Literal::Bool(true)) {
                     self.execute(*then_branch)?;
@@ -224,40 +241,12 @@ impl Interpreter {
                 }
             }
             Stmt::While { condition, body } => {
-                let loc = self.get_loc(condition.clone());
+                let loc = Self::get_loc(condition.clone());
                 let value = self.is_truthy(self.clone().evaluate(condition.clone())?, loc)?;
 
                 while value == Value::Literal(Literal::Bool(true)) {
                     self.execute(*body.clone())?;
                 }
-            }
-            Stmt::FnDecl(FnDecl { name, params, body }) => {
-                let id = self.alloc_id();
-
-                let function = Function {
-                    name: name.clone(),
-                    id,
-                    params,
-                    body,
-                    closure: self.enviroment.clone(),
-                    instance: None,
-                    is_initializer: false,
-                };
-
-                self.functions.insert(id, function);
-
-                self.enviroment.define(
-                    name.clone(),
-                    Identifier::new(
-                        self,
-                        name.clone(),
-                        Value::Literal(Literal::Fn {
-                            name: name.clone(),
-                            id,
-                            instance: None,
-                        })
-                    ),
-                );
             }
             Stmt::Return { loc: _, value } => {
                 self.return_value = Some(if let Some(value) = value {
@@ -265,8 +254,6 @@ impl Interpreter {
                 } else {
                     Value::Literal(Literal::None)
                 });
-            }
-            Stmt::Import { imports, file_path } => {
             }
         }
 
@@ -287,7 +274,7 @@ impl Interpreter {
         Ok(())
     }
 
-    fn get_loc(&self, expr: Expr) -> SourceLocation {
+    fn get_loc(expr: Expr) -> SourceLocation {
         match expr {
             Expr::Binary {
                 left: _,
@@ -304,7 +291,7 @@ impl Interpreter {
                 loc,
                 args: _,
             } => loc,
-            Expr::Group(expr) => self.get_loc(*expr),
+            Expr::Group(expr) => Self::get_loc(*expr),
             Expr::Literal { lit: _, loc } => loc,
             Expr::Unary { operator, expr: _ } => operator.to_source_location(),
             Expr::Var(symbol) => SourceLocation {
@@ -329,6 +316,8 @@ impl Interpreter {
             },
             Expr::This(loc) => loc,
             Expr::Closure { decl: _, loc } => loc,
+            Expr::Array { loc, exprs: _ } => loc,
+            Expr::Index { expr: _, index } => Self::get_loc(*index),
         }
     }
 
@@ -340,13 +329,36 @@ impl Interpreter {
                 right,
             } => self.eval_binary(*left, operator, *right),
             Expr::Group(expr) => self.evaluate(*expr),
-            Expr::Literal { lit, loc: _ } => Ok(lit),
+            Expr::Literal { lit, loc: _ } => Ok(lit.calc(self)),
             Expr::Unary { operator, expr } => self.eval_unary(operator, *expr),
-            Expr::Var(name) => Ok(*self.enviroment.get(name, self)?.value),
+            Expr::Var(name) => Ok(*self.enviroment.get(&name, &self.error_builder)?.value),
             Expr::Assign { sym, value } => {
-                let lit = self.evaluate(*value)?;
+                let lit = self.evaluate(*value)?.calc(self);
 
-                self.enviroment.assign(sym.clone(), Identifier::new(self, sym, lit.clone()), &self.clone())?;
+                if let Value::Imported(imported) =
+                    *self.enviroment.get(&sym, &self.error_builder)?.value
+                {
+                    let error_builder = self.error_builder.clone();
+                    let interpreter = self.get_mut_interpreter(
+                        &imported.url,
+                        SourceLocation {
+                            line: sym.line,
+                            col: sym.col,
+                        },
+                    )?;
+
+                    interpreter.enviroment.assign(
+                        sym.clone(),
+                        Identifier::new(interpreter, sym, lit.clone(), true),
+                        &error_builder,
+                    )?;
+                } else {
+                    self.enviroment.assign(
+                        sym.clone(),
+                        Identifier::new(self, sym, lit.clone(), false),
+                        &self.error_builder,
+                    )?;
+                }
 
                 Ok(lit)
             }
@@ -355,23 +367,21 @@ impl Interpreter {
                 operator,
                 right,
             } => {
-                let left = self.evaluate(*left)?;
+                let left = self.evaluate(*left)?.calc(self);
 
-                if operator.token_type == TokenType::Or {
+                if operator.token_type == TokenType::OrOr {
                     if self.is_truthy_operator(left.clone(), operator)?
                         == Value::Literal(Literal::Bool(true))
                     {
                         return Ok(left);
                     }
-                } else {
-                    if self.is_falsy_operator(left.clone(), operator)?
-                        == Value::Literal(Literal::Bool(true))
-                    {
-                        return Ok(left);
-                    }
+                } else if self.is_falsy_operator(left.clone(), operator)?
+                    == Value::Literal(Literal::Bool(true))
+                {
+                    return Ok(left);
                 }
 
-                return self.evaluate(*right);
+                self.evaluate(*right)
             }
             Expr::Call {
                 callee,
@@ -380,49 +390,83 @@ impl Interpreter {
             } => {
                 let callee = self.evaluate(*callee)?;
 
-                match as_callable(self, &callee) {
-                    Some(callable) => {
-                        let maybe_args: Result<Vec<_>, _> = arg_exprs
-                            .iter()
-                            .map(|arg| self.evaluate(*arg.clone()))
-                            .collect();
+                let callable = as_callable(self, &callee, loc.clone())?;
 
-                        match maybe_args {
-                            Ok(args) => {
-                                if args.len() != <u8 as Into<usize>>::into(callable.arity(self)) {
-                                    Err(self.error_builder.build(ErrorType::Runtime, format!("invalid call: callee has {} arguments, but it was called with {} arguments", callable.arity(&mut self.clone()), args.len()), loc))
-                                } else {
-                                    callable.call(self, &args)
-                                }
-                            }
-                            Err(err) => Err(err),
+                let interpreter = if callable.0 == self.error_builder.0.path.join("/") {
+                    self
+                } else {
+                    self.get_mut_interpreter(&callable.0, loc.clone())?
+                };
+
+                let maybe_args: Result<Vec<_>, _> = arg_exprs
+                    .iter()
+                    .map(|arg| interpreter.evaluate(*arg.clone()))
+                    .collect();
+
+                let arity = <u8 as Into<usize>>::into(callable.1.arity(interpreter));
+                match maybe_args {
+                    Ok(args) => {
+                        if args.len() != arity {
+                            Err(interpreter.error_builder.build(ErrorType::WrongCalling {
+                                expected: arity,
+                                got: args.len(),
+                                loc: [loc],
+                            }))
+                        } else {
+                            callable.1.call(interpreter, &args)
                         }
                     }
-                    None => Err(self.error_builder.build(
-                        ErrorType::Runtime,
-                        format!("value of type '{}' is not callable", callee.to_type(self)),
-                        loc,
-                    )),
+                    Err(err) => Err(err),
                 }
             }
+
             Expr::Get { attr, lhs } => {
-                let val = self.evaluate(*lhs)?;
+                let val = self.evaluate(*lhs.clone())?;
 
                 match val {
-                    Value::Literal(Literal::Instance { name: _, id }) => {
+                    Value::Literal(Literal::Instance { name, id }) => {
+                        if let Value::Imported(Imported { sym: _, url }) =
+                            *self.enviroment.get(&name, &self.error_builder)?.value
+                        {
+                            return self
+                                .get_interpreter(
+                                    &url,
+                                    SourceLocation {
+                                        line: name.line,
+                                        col: name.col,
+                                    },
+                                )?
+                                .get_instance(id)
+                                .get_attr(attr, self);
+                        }
+
                         self.get_instance(id).get_attr(attr, self)
                     }
-                    _ => Err(self.error_builder.build(
-                        ErrorType::Runtime,
-                        format!(
-                            "only instances have attributes but found value of type '{}'",
-                            val.to_type(self)
-                        ),
-                        SourceLocation {
-                            line: attr.line,
-                            col: attr.col,
-                        },
-                    )),
+                    Value::Imported(ref import) => {
+                        let interpreter = self.get_mut_interpreter(
+                            &import.url,
+                            SourceLocation {
+                                line: attr.line,
+                                col: attr.col,
+                            },
+                        )?;
+                        interpreter.evaluate(Expr::Get {
+                            attr: attr.clone(),
+                            lhs: Box::new(Expr::Literal {
+                                lit: val,
+                                loc: SourceLocation {
+                                    line: attr.line,
+                                    col: attr.col,
+                                },
+                            }),
+                        })
+                    }
+                    _ => Err(self.error_builder.build(ErrorType::Undefined {
+                        ident: attr.name.clone(),
+                        kind: String::from("attribute"),
+                        on: format!("on value of type {}", val.calc(self).to_type(self)),
+                        loc: [attr.to_source_loc()],
+                    })),
                 }
             }
             Expr::Closure { decl, loc: _ } => {
@@ -437,14 +481,35 @@ impl Interpreter {
 
                 self.closures.insert(id, closure);
 
-                return Ok(Value::Literal(Literal::Closure(id)));
+                Ok(Value::Literal(Literal::Closure(id)))
             }
             Expr::Set { lhs, attr, rhs } => {
                 let lhs = self.evaluate(*lhs)?;
                 let rhs = self.evaluate(*rhs)?;
 
                 match lhs {
-                    Value::Literal(Literal::Instance { name: _, id }) => {
+                    Value::Literal(Literal::Instance { name, id }) => {
+                        if let Value::Imported(Imported { sym: _, url }) =
+                            *self.enviroment.get(&name, &self.error_builder)?.value
+                        {
+                            match self
+                                .get_mut_interpreter(
+                                    &url,
+                                    SourceLocation {
+                                        line: attr.line,
+                                        col: attr.col,
+                                    },
+                                )?
+                                .instances
+                                .get_mut(&id)
+                            {
+                                Some(inst) => {
+                                    inst.fields.insert(attr.name.clone(), rhs.clone());
+                                    return Ok(rhs);
+                                }
+                                None => panic!("Couldn't find instance with id {id}"),
+                            }
+                        }
                         match self.instances.get_mut(&id) {
                             Some(inst) => {
                                 inst.fields.insert(attr.name.clone(), rhs.clone());
@@ -453,70 +518,130 @@ impl Interpreter {
                             None => panic!("Couldn't find instance with id {id}"),
                         }
                     }
-                    _ => Err(self.error_builder.build(
-                        ErrorType::Runtime,
-                        format!(
-                            "only instances have attributes but found value of type '{}'",
-                            lhs.to_type(self)
-                        ),
-                        SourceLocation {
-                            line: attr.line,
-                            col: attr.col,
-                        },
-                    )),
+                    Value::Imported(ref import) => {
+                        let interpreter = self.get_mut_interpreter(
+                            &import.url,
+                            SourceLocation {
+                                line: attr.line,
+                                col: attr.col,
+                            },
+                        )?;
+                        interpreter.evaluate(Expr::Set {
+                            lhs: Box::new(Expr::Literal {
+                                lit: lhs,
+                                loc: SourceLocation {
+                                    line: attr.line,
+                                    col: attr.col,
+                                },
+                            }),
+                            attr: attr.clone(),
+                            rhs: Box::new(Expr::Literal {
+                                lit: rhs,
+                                loc: SourceLocation {
+                                    line: attr.line,
+                                    col: attr.col,
+                                },
+                            }),
+                        })
+                    }
+                    _ => Err(self.error_builder.build(ErrorType::Undefined {
+                        ident: attr.name.clone(),
+                        kind: String::from("attribute"),
+                        on: format!("on value of type {}", lhs.calc(self).to_type(self)),
+                        loc: [attr.to_source_loc()],
+                    })),
                 }
             }
             Expr::This(loc) => {
                 match self.lookup(Symbol::new(String::from("this"), loc.line, loc.col)) {
-                    Ok(value) => Ok(value.clone()),
+                    Ok(value) => Ok(value),
                     Err(err) => Err(err),
+                }
+            }
+            Expr::Array { loc: _, exprs } => {
+                let mut values = Vec::new();
+
+                for expr in exprs {
+                    values.push(self.evaluate(expr)?);
+                }
+
+                Ok(Value::Literal(Literal::Array(values)))
+            }
+            Expr::Index { expr, index } => {
+                let value = self.evaluate(*expr)?;
+                let index = self.evaluate(*index)?;
+                match (value, index) {
+                    (Value::Literal(Literal::Array(values)), Value::Literal(Literal::Number(number))) =>
                 }
             }
         }
     }
 
+    pub fn get_mut_interpreter(
+        &mut self,
+        file_path: &str,
+        source_location: SourceLocation,
+    ) -> Result<&mut Interpreter, Error> {
+        match self.modules.get_mut(file_path) {
+            Some(interpreter) => Ok(interpreter),
+            None => Err(self.error_builder.build(ErrorType::Undefined {
+                ident: String::from(file_path),
+                kind: String::from("module"),
+                on: String::new(),
+                loc: [source_location],
+            })),
+        }
+    }
+
+    pub fn get_interpreter(
+        &self,
+        file_path: &str,
+        source_location: SourceLocation,
+    ) -> Result<&Interpreter, Error> {
+        match self.modules.get(file_path) {
+            Some(interpreter) => Ok(interpreter),
+            None => Err(self.error_builder.build(ErrorType::Undefined {
+                ident: String::from(file_path),
+                kind: String::from("module"),
+                on: String::new(),
+                loc: [source_location],
+            })),
+        }
+    }
+
     pub fn lookup(&self, variable: Symbol) -> Result<Value, Error> {
-        match self.enviroment.get(variable.clone(), self) {
+        match self.enviroment.get(&variable, &self.error_builder) {
             Ok(ident) => Ok(*ident.value),
-            Err(_) => Ok(*self.globals.get(variable, self)?.value),
+            Err(_) => Ok(*self.globals.get(&variable, &self.error_builder)?.value),
         }
     }
 
     fn eval_unary(&mut self, operator: Token, expr: Expr) -> Result<Value, Error> {
-        let right = self.evaluate(expr)?;
+        let right = self.evaluate(expr)?.calc(self);
 
         match operator.token_type {
             TokenType::Bang => Ok(self.is_falsy_operator(right, operator)?),
             TokenType::Minus => match right {
                 Value::Literal(Literal::Number(n)) => Ok(Value::Literal(Literal::Number(-n))),
-                _ => Err(self.error_builder.build(
-                    ErrorType::Runtime,
-                    format!(
-                        "unary operator '-' cannot be used on values of type '{}'",
-                        right.to_type(self)
-                    ),
-                    SourceLocation {
-                        line: operator.line,
-                        col: operator.col,
-                    },
-                )),
+                _ => Err(self.error_builder.build(ErrorType::Unsupported {
+                    r#type: String::from("unary"),
+                    operator: String::from("-"),
+                    r#for: format!("{}", right.calc(self).to_type(self)),
+                    loc: [operator.to_source_location()],
+                })),
             },
-            _ => Err(self.error_builder.build(
-                ErrorType::Runtime,
-                format!("invalid unary operator '{}'", operator.lexeme),
-                SourceLocation {
-                    line: operator.line,
-                    col: operator.col,
-                },
-            )),
+            _ => Err(self.error_builder.build(ErrorType::Invalid {
+                target: format!("unary operator '{}'", operator.lexeme),
+                loc: [operator.to_source_location()],
+            })),
         }
     }
 
     fn eval_binary(&mut self, left: Expr, operator: Token, right: Expr) -> Result<Value, Error> {
-        let left = self.evaluate(left)?;
-        let right = self.evaluate(right)?;
+        let left = self.evaluate(left)?.calc(self);
+        let right = self.evaluate(right)?.calc(self);
 
-        match (left, operator.token_type, right) {
+        match (left, operator.token_type.clone(), right) {
             // ==, !=
             (literal_left, TokenType::EqualEqual, literal_right) => {
                 Ok(Value::Literal(Literal::Bool(literal_left == literal_right)))
@@ -569,14 +694,9 @@ impl Interpreter {
                 Value::Literal(Literal::Number(right_num)),
             ) => {
                 if right_num == 0.0 {
-                    Err(self.error_builder.build(
-                        ErrorType::Runtime,
-                        format!("division by zero"),
-                        SourceLocation {
-                            line: operator.line,
-                            col: operator.col,
-                        },
-                    ))
+                    Err(self
+                        .error_builder
+                        .build(ErrorType::DivisionByZero([operator.to_source_location()])))
                 } else {
                     Ok(Value::Literal(Literal::Number(left_num / right_num)))
                 }
@@ -587,61 +707,58 @@ impl Interpreter {
                 Value::Literal(Literal::String(right_string)),
             ) => Ok(Value::Literal(Literal::String(left_string + &right_string))),
 
-            (literal_left, _, literal_right) => Err(self.error_builder.build(
-                ErrorType::Runtime,
-                format!(
-                    "operator is compatible with values of type '{}' and '{}'",
-                    literal_left.to_type(self),
-                    literal_right.to_type(self)
-                ),
-                SourceLocation {
-                    line: operator.line,
-                    col: operator.col,
-                },
-            )),
+            (literal_left, _, literal_right) => {
+                Err(self.error_builder.build(ErrorType::UnsupportedBinary {
+                    operator: operator.lexeme.to_string(),
+                    r#for: [
+                        format!("{}", literal_left.calc(self).to_type(self)),
+                        format!("{}", literal_right.calc(self).to_type(self)),
+                    ],
+                    loc: [operator.to_source_location()],
+                }))
+            }
         }
     }
 
     fn is_truthy_operator(&self, literal: Value, operator: Token) -> Result<Value, Error> {
         match literal {
             Value::Literal(Literal::Bool(bool)) => Ok(Value::Literal(Literal::Bool(bool))),
-            literal => Err(self.error_builder.build(
-                ErrorType::Runtime,
-                format!(
-                    "operator '{}' is not compatible with value of type '{}'",
-                    operator.lexeme,
-                    literal.to_type(self)
-                ),
-                SourceLocation {
+            literal => Err(self.error_builder.build(ErrorType::Unsupported {
+                r#type: literal.to_type(self).to_string(),
+                operator: operator.lexeme,
+                r#for: String::from("unary"),
+                loc: [SourceLocation {
                     line: operator.line,
                     col: operator.col,
-                },
-            )),
+                }],
+            })),
         }
     }
 
     fn is_truthy(&self, literal: Value, loc: SourceLocation) -> Result<Value, Error> {
         match literal {
             Value::Literal(Literal::Bool(bool)) => Ok(Value::Literal(Literal::Bool(bool))),
-            literal => Err(self.error_builder.build(ErrorType::Runtime, format!("only booleans are allowed as result of an expression but found value of type {}", literal.to_type(self)), SourceLocation { line: loc.line, col: loc.col })),
+            literal => Err(self.error_builder.build(ErrorType::OnlyAllowed {
+                expected: String::from("booleans"),
+                of: String::from("result of this expression"),
+                item: literal.to_type(self).to_string(),
+                loc: [loc],
+            })),
         }
     }
 
     fn is_falsy_operator(&self, literal: Value, operator: Token) -> Result<Value, Error> {
         match literal {
             Value::Literal(Literal::Bool(bool)) => Ok(Value::Literal(Literal::Bool(!bool))),
-            literal => Err(self.error_builder.build(
-                ErrorType::Runtime,
-                format!(
-                    "operator '{}' is not compatible with value of type '{}'",
-                    operator.lexeme,
-                    literal.to_type(self)
-                ),
-                SourceLocation {
+            literal => Err(self.error_builder.build(ErrorType::Unsupported {
+                r#type: literal.to_type(self).to_string(),
+                operator: operator.lexeme,
+                r#for: String::from("unary"),
+                loc: [SourceLocation {
                     line: operator.line,
                     col: operator.col,
-                },
-            )),
+                }],
+            })),
         }
     }
 
@@ -704,8 +821,9 @@ impl Interpreter {
                 Identifier::native_fn(NativeFn {
                     name: String::from("log"),
                     arity: 1,
-                    callable: |_, lits| match &lits[0] {
-                        arg => {
+                    callable: |_, lits| {
+                        let arg = &lits[0];
+                        {
                             println!("{}", arg);
                             Ok(Value::Literal(Literal::Void))
                         }
@@ -733,7 +851,8 @@ impl Interpreter {
             instances: HashMap::new(),
             closures: HashMap::new(),
             error_builder: ErrorBuilder(file.clone()),
-            project
+            project,
+            modules: HashMap::new(),
         }
     }
 }

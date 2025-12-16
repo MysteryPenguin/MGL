@@ -1,23 +1,19 @@
 pub mod enviroment;
+pub mod error;
 pub mod interpreter;
 pub mod lexer;
+pub mod loc;
+pub mod parse;
 pub mod parser;
 pub mod saving;
 
-use std::{
-    env,
-    fs,
-    path::Path,
-    process,
-};
-
-use saving::project::*;
+use std::{env, fs, path::Path, process};
 
 fn main() {
     let mut args: Vec<String> = env::args().collect();
     args.remove(0);
 
-    if args[0] == String::from("run") {
+    if args[0] == *"run" {
         run_project("./");
     }
 }
@@ -37,7 +33,10 @@ fn run_project(path: &str) {
         }
     };
 
-    let src = look_for_dir_error(dir_tree.look_for_dir(&[String::from("."), String::from("src")], 0), "src");
+    let src = look_for_dir_error(
+        dir_tree.look_for_dir(&[String::from("."), String::from("src")], 0),
+        "src",
+    );
 
     let mut project = Project::new(manifest, src.clone());
     match project.run() {
@@ -107,11 +106,7 @@ pub enum PathTree {
 impl Dir {
     fn generate(path: &str) -> Dir {
         let mut dir_tree = Dir {
-            path: path
-                .to_string()
-                .split(|c| c == '\\' || c == '/')
-                .map(String::from)
-                .collect(),
+            path: path.split(['\\', '/']).map(String::from).collect(),
             content: Vec::new(),
         };
 
@@ -138,7 +133,7 @@ impl Dir {
                             .path()
                             .display()
                             .to_string()
-                            .split(|c| c == '\\' || c == '/')
+                            .split(['\\', '/'])
                             .map(String::from)
                             .collect(),
                         source: content,
@@ -168,7 +163,7 @@ impl Dir {
             }
         }
 
-        return None;
+        None
     }
     fn look_for_dir(&self, path: &[String], iters: usize) -> Option<&Dir> {
         if self.path[iters] == path[iters] {
@@ -188,6 +183,6 @@ impl Dir {
             }
         }
 
-        return None;
+        None
     }
 }

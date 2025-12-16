@@ -1,3 +1,14 @@
+import a, F, y from "./src/example.mgl"
+
 fn main() {
-    print "Hello, world!"
+    let x = F(3);
+    log(x.x);
+
+    if x.x == 2 && y == 2 {
+        log(e());
+    
+}
+
+fn e() {
+    return "Hello";
 }
