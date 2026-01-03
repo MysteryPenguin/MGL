@@ -4,8 +4,8 @@ pub mod interpreter;
 pub mod lexer;
 pub mod loc;
 pub mod parse;
-pub mod parser;
 pub mod saving;
+pub mod interpret;
 
 use std::{env, fs, path::Path, process};
 

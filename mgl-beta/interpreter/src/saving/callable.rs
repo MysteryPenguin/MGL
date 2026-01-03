@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fmt};
+/*use std::{collections::HashMap, fmt};
 
 use super::{
     error::*,
@@ -239,7 +239,7 @@ impl Callable for Class {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct Instance {
+pub struct ClassInstance {
     pub class_name: Symbol,
     pub class_id: u64,
     pub id: u64,
@@ -323,4 +323,22 @@ pub fn as_callable(
             loc: [loc],
         })),
     }
+}*/
+
+use std::{collections::HashMap};
+
+use crate::{enviroment::Enviroment, saving::{literal::Literal, pattern::Pattern, stmt::Stmt, symbol::Symbol, r#type::Type}};
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClassInst {
+    pub class_name: Box<str>,
+    pub fields: HashMap<String, Literal>
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Function {
+    pub name: Symbol,
+    pub arg: (Pattern, Type),
+    pub body: Stmt,
+    pub closure: Enviroment
 }
