@@ -1,15 +1,20 @@
 use std::collections::HashMap;
 
-use crate::saving::{
-    error::*,
-    literal::Identifier,
-    symbol::{SourceLocation, Symbol},
-};
+use crate::{error::{ErrorType, MGLError}, loc::SourceLoc, saving::{
+    callable::{ClassInst, Function}, literal::Literal, symbol::Symbol, r#type::Type
+}};
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct GlobalEnv {
+    pub env: Enviroment,
+    pub class_instances: HashMap<usize, ClassInst>,
+    pub functions: HashMap<usize, Function>
+}
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Enviroment {
     pub enclosing: Option<Box<Enviroment>>,
-    pub values: HashMap<String, (Identifier, SourceLocation)>,
+    pub values: HashMap<Box<str>, (Type, Literal, SourceLoc)>,
 }
 
 impl Enviroment {
@@ -20,33 +25,34 @@ impl Enviroment {
         }
     }
 
-    pub fn define(&mut self, sym: Symbol, ident: Identifier) {
+    pub fn define(&mut self, sym: Symbol, lit: Literal, r#type: Option<Type>) -> Result<(), MGLError> {
         self.values.insert(
             sym.name,
             (
-                ident,
-                SourceLocation {
-                    line: sym.line,
-                    col: sym.col,
+                if let Some(r#type) = r#type {
+                    if r#type != lit.to_type() {
+                        return Err(MGLError { error_type: ErrorType::TypeError, msg: format!("value of type '{}' is not assignable to type '{}'", lit.to_type(), r#type), loc: Some((&sym).into()) });
+                    }
+                    r#type
+                } else {
+                    lit.to_type()
                 },
+                lit,
+                SourceLoc {
+                    line: sym.line,
+                    col: sym.col
+                }
             ),
         );
+        Ok(())
     }
 
-    pub fn get(&self, sym: &Symbol, error_builder: &ErrorBuilder) -> Result<Identifier, Error> {
+    pub fn get(&self, sym: &Symbol) -> Result<&Literal, MGLError> {
         match self.values.get(&sym.name) {
-            Some((val, _)) => Ok(val.clone()),
+            Some((_, lit, _)) => Ok(lit),
             None => match &self.enclosing {
-                Some(enclosing) => enclosing.get(sym, error_builder),
-                None => Err(error_builder.build(ErrorType::Undefined {
-                    ident: sym.name.clone(),
-                    kind: String::from("variable"),
-                    on: String::from("this module"),
-                    loc: [SourceLocation {
-                        line: sym.line,
-                        col: sym.col,
-                    }],
-                })),
+                Some(enclosing) => enclosing.get(sym),
+                None => Err(MGLError { error_type: ErrorType::UndefinedVariableError, msg: format!("variable '{}' does not exist", sym.name), loc: Some(sym.into()) }),
             },
         }
     }
@@ -54,34 +60,19 @@ impl Enviroment {
     pub fn assign(
         &mut self,
         sym: Symbol,
-        ident: Identifier,
-        error_builder: &ErrorBuilder,
-    ) -> Result<(), Error> {
-        if let Some(saved) = self.values.get(&sym.name) {
-            if ident.r#type != saved.0.r#type {
-                return Err(error_builder.build(ErrorType::Type {
-                    expected: saved.0.r#type.clone(),
-                    found: ident.r#type,
-                    loc: [sym.to_source_loc(), saved.1.clone()],
-                }));
-            }
-            self.define(sym, ident);
+        lit: Literal,
+    ) -> Result<(), MGLError> {
+        if let Some((r#type, lit, source_loc)) = self.values.get(&sym.name) {
+            let lit_type = lit.to_type();
+            self.define(sym, lit.clone(), Some(r#type.clone()));
             return Ok(());
         }
         match &mut self.enclosing {
             Some(enclosing) => {
-                enclosing.assign(sym, ident, error_builder)?;
+                enclosing.assign(sym, lit)?;
                 Ok(())
             }
-            None => Err(error_builder.build(ErrorType::Undefined {
-                ident: sym.name.clone(),
-                kind: String::from("variable"),
-                on: String::from("this module"),
-                loc: [SourceLocation {
-                    line: sym.line,
-                    col: sym.col,
-                }],
-            })),
+            None => Err(MGLError { error_type: ErrorType::UndefinedVariableError, msg: format!("variable '{}' does not exist", sym.name), loc: Some((&sym).into()) })
         }
     }
 }

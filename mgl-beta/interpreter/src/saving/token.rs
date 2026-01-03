@@ -1,6 +1,5 @@
 use crate::{
-    loc::SourceLoc,
-    saving::{expr::Operator, literal::Literal},
+    error::{ErrorType, MGLError}, loc::SourceLoc, saving::{expr::Operator, literal::Literal}
 };
 
 use super::{symbol::*, token_type::TokenType};
@@ -50,6 +49,8 @@ impl Into<Symbol> for &Token {
         }
     }
 }
+
+impl Into<Oper
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TokenStream {
@@ -121,7 +122,7 @@ impl TokenStream {
     }
 }
 
-impl Into<Operator<T>> for &Token {
+impl<T: From<TokenType>> Into<Operator<T>> for &Token {
     fn into(self) -> Operator<T> {
         Operator {
             loc: SourceLoc {

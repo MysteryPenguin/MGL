@@ -3,7 +3,7 @@ use std::{collections::HashMap, fmt::Display};
 use crate::{
     error::{ErrorType, MGLError},
     parse::Parse,
-    saving::{symbol::Symbol, token::TokenStream, token_type::TokenType},
+    saving::{token::TokenStream, token_type::TokenType},
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -26,9 +26,10 @@ pub enum Type {
     Or(Box<Type>, Box<Type>),
     Expr(Box<Type>),
     Range(Box<Type>, Box<Type>),
-    Ref(RefType),
+    Ref(Option<RefType>),
     Type,
     Never,
+    Ident
 }
 
 impl Display for Type {
@@ -42,6 +43,7 @@ impl Display for Type {
             Type::Float => write!(f, "float"),
             Type::Bool => write!(f, "bool"),
             Type::Char => write!(f, "char"),
+            Type::Ident => write!(f, "ident"),
             Type::Fn(function) => {
                 if let Some(function) = function {
                     write!(f, "{function}")
@@ -58,7 +60,7 @@ impl Display for Type {
             }
             Type::List(list) => {
                 if let Some(list) = list {
-                    write!(f, "{list}")
+                    write!(f, "[{list}]")
                 } else {
                     write!(f, "list")
                 }
@@ -73,7 +75,10 @@ impl Display for Type {
             Type::Or(left, right) => write!(f, "{left} | {right}"),
             Type::Expr(r#type) => write!(f, "({})", r#type),
             Type::Range(min, max) => write!(f, "{min}..{max}"),
-            Type::Ref(reference) => write!(f, "{reference}"),
+            Type::Ref(reference) => match reference {
+                Some(val) => write!(f, "{val}"),
+                None => write!(f, "ref"),
+            },
             Type::Type => write!(f, "type"),
             Type::Never => write!(f, "!"),
             Type::Struct => write!(f, "struct"),
@@ -84,7 +89,20 @@ impl Display for Type {
 }
 
 impl Parse for Type {
-    fn parse(stream: &mut TokenStream) -> Result<Self, MGLError> {}
+    fn parse(stream: &mut TokenStream) -> Result<Self, MGLError> {
+        let input_type = Type::template_types(stream)?;
+
+        let output_type = if stream.match_tokens(&[TokenType::Arrow]) {
+            Some(Type::template_types(stream)?)
+        } else {
+            None
+        };
+
+        match output_type {
+            Some(r#type) => Ok(Type::Fn(Some(FnType { param: Box::new(input_type), return_type: Box::new(r#type) }))),
+            None => Ok(input_type)
+        }
+    }
 }
 
 impl Type {
@@ -95,7 +113,7 @@ impl Type {
                 String::from("expect type after type annotation"),
             )?;
 
-            let r#type = match r#type.lexeme {
+            let r#type = match &*r#type.lexeme {
                 "string" => Type::String,
                 "uint" => Type::UInt,
                 "int" => Type::Int,
@@ -111,7 +129,8 @@ impl Type {
                 "!" => Type::Never,
                 "struct" => Type::Struct,
                 "class" => Type::Class,
-                obj_templ_name => Type::ObjectTemplInstance(obj_templ_name),
+                "ident" => Type::Ident,
+                obj_templ_name => Type::ObjectTemplInstance(obj_templ_name.into()),
             };
 
             return Ok(r#type);
@@ -133,13 +152,13 @@ impl Type {
                 String::from("expected ']' after list type definition"),
             )?;
 
-            return Ok(r#type);
+            return Ok(Type::List(Some(Box::new(r#type))));
         }
 
         if stream.match_tokens(&[TokenType::LeftParen]) {
             let mut types = Vec::new();
 
-            while !stream.check(token_type) && !stream.is_at_end() {
+            while !stream.check(&TokenType::LeftParen) && !stream.is_at_end() {
                 let r#type = Self::template_types(stream)?;
                 types.push(r#type);
                 stream.consume(
@@ -151,16 +170,12 @@ impl Type {
                 TokenType::RightParen,
                 String::from("expect ')' after tuple type definition"),
             )?;
+
+            return Ok(Self::Tuple(Some(TupleType(types))));
         }
 
         let r#type = Self::single_eval(stream)?;
-
-        let token = stream.peek();
-        Err(MGLError {
-            error_type: ErrorType::TypeError,
-            msg: String::from("unkown type"),
-            loc: Some(token.into()),
-        })
+        Ok(r#type)
     }
 }
 
@@ -212,14 +227,8 @@ impl Display for ObjectType {
     }
 }
 
-impl Display for ArrayType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "[{}; {}]", *self.r#type, self.len)
-    }
-}
-
 #[derive(Debug, Clone, PartialEq)]
-pub struct TupleType(Vec<Type>);
+pub struct TupleType(pub Vec<Type>);
 
 impl Display for TupleType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

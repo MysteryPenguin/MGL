@@ -57,7 +57,7 @@ impl Parse for ObjectTemplItem {
         let name = stream.consume(
             TokenType::Ident,
             String::from("expected identifier for class/struct"),
-        )?;
+        )?.into();
         stream.consume(
             TokenType::LeftBrace,
             String::from("expected '{' after class/struct name"),
@@ -80,7 +80,7 @@ impl Parse for ObjectTemplItem {
 
             let r#type = Type::parse(stream)?;
 
-            fields.insert(field, r#type);
+            fields.insert(field.name, r#type);
         }
 
         Ok(ObjectTemplItem {
@@ -110,10 +110,9 @@ impl Parse for FnItem {
 
         let (pattern, r#type) = <(Pattern, Option<Type>)>::parse(stream)?;
 
-        let token = stream.peek();
-
         let r#type = match (stream.match_tokens(&[TokenType::Colon]), r#type) {
             (true, Some(r#type)) => {
+                let token = stream.peek();
                 return Err(MGLError {
                     error_type: ErrorType::PatternError,
                     msg: String::from(
@@ -125,6 +124,7 @@ impl Parse for FnItem {
             (true, None) => Type::parse(stream)?,
             (false, Some(r#type)) => r#type,
             (false, None) => {
+                let token = stream.peek();
                 return Err(MGLError {
                     error_type: ErrorType::TypeError,
                     msg: String::from("type annotation required in function parameters"),
@@ -158,6 +158,7 @@ impl Parse for GlobalVarItem {
 
         let r#type = match (stream.match_tokens(&[TokenType::Colon]), r#type) {
             (true, Some(val)) => {
+                let token = stream.peek();
                 return Err(MGLError {
                     error_type: ErrorType::PatternError,
                     msg: String::from(

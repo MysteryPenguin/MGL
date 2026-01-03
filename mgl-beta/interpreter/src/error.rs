@@ -42,6 +42,7 @@ pub enum ErrorType {
     StructureError,
     PatternError,
     TypeError,
+    UndefinedVariableError,
     Pass,
 }
 
@@ -54,6 +55,7 @@ impl Display for ErrorType {
             ErrorType::StructureError => write!(f, "StructureError"),
             ErrorType::PatternError => write!(f, "PatternError"),
             ErrorType::TypeError => write!(f, "TypeError"),
+            ErrorType::UndefinedVariableError => write!(f, "UndefinedVariableError"),
             ErrorType::Pass => panic!("Case Pass without handling"),
         }
     }

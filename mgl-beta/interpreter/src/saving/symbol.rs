@@ -17,12 +17,17 @@ impl Symbol {
             col,
         }
     }
+}
 
-    pub fn to_source_loc(&self) -> SourceLocation {
-        SourceLoc {
-            line: self.line,
-            col: self.col,
-        }
+impl Into<SourceLoc> for &Symbol {
+    fn into(self) -> SourceLoc {
+        SourceLoc { line: self.line, col: self.col }
+    }
+}
+
+impl Into<SourceLoc> for &mut Symbol {
+    fn into(self) -> SourceLoc {
+        SourceLoc { line: self.line, col: self.col }
     }
 }
 

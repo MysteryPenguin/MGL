@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::{
     error::{ErrorType, MGLError},
-    saving::r#type::Type,
+    saving::r#type::{RefType, TupleType, Type},
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -21,7 +21,10 @@ pub enum Literal {
     Struct(ObjectTempl),
     StructInst(StructInst),
     Class(ObjectTempl),
-    ClassInst(usize),
+    ClassInst {
+        name: Box<str>,
+        reference: usize
+    },
     List(usize),
     Ident(Box<str>),
     Type(Type),
@@ -47,7 +50,7 @@ impl TryFrom<&Literal> for String {
 }
 
 impl Literal {
-    fn display(&self) -> Result<String, MGLError> {
+    pub fn display(&self) -> Result<String, MGLError> {
         match self {
             Literal::String(string) => Ok(string.to_string()),
             Literal::UInt(uint) => Ok(uint.to_string()),
@@ -79,9 +82,39 @@ impl Literal {
                 loc: None,
             }),
             Literal::Class(obj) => Ok(format!("[class {}]", obj.name)),
-            Literal::ClassInst(id) => Ok(format!("[classinst {:#x}]", *id)),
+            Literal::ClassInst { name, reference: id }=> Ok(format!("[classinst {name} <{:#x}>]", *id)),
             Literal::Ident(ident) => Ok(format!("{}", *ident)),
             Literal::Type(ty) => Ok(format!("{ty}")),
+        }
+    }
+
+    pub fn to_type(&self) -> Type {
+        match self {
+            &Literal::String(_) => Type::String,
+            &Literal::Bool(_) => Type::Bool,
+            &Literal::Int(_) => Type::Int,
+            &Literal::UInt(_) => Type::UInt,
+            &Literal::I128(_) => Type::U128,
+            &Literal::U128(_) => Type::U128,
+            &Literal::Float(_) => Type::Float,
+            &Literal::Class(_) => Type::Class,
+            &Literal::Struct(_) => Type::Struct,
+            &Literal::ClassInst { ref name, .. } => Type::ObjectTemplInstance(name.clone()),
+            &Literal::StructInst(ref obj) => Type::ObjectTemplInstance(obj.name.clone()),
+            &Literal::Fn(_) => Type::Fn(None),
+            &Literal::Object(_) => Type::Object(None),
+            &Literal::Ref(_) => Type::Ref(None),
+            &Literal::Tuple(ref tuple) => {
+                let mut types = Vec::new();
+
+                for lit in tuple {
+                    types.push(lit.to_type());
+                }
+                Type::Tuple(Some(TupleType(types)))
+            },
+            &Literal::Ident(_) => Type::Ident,
+            &Literal::Type(_) => Type::Type,
+            &Literal::List(_) => Type::List(None)
         }
     }
 }

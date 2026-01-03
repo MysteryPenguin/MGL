@@ -1,8 +1,5 @@
 use crate::{
-    error::{ErrorType, MGLError},
-    loc::SourceLoc,
-    parse::Parse,
-    saving::{literal::Literal, pattern::Pattern, token::TokenStream, token_type::TokenType},
+    error::{ErrorType, MGLError}, interpret::Interpret, loc::SourceLoc, parse::Parse, saving::{literal::Literal, pattern::Pattern, token::TokenStream, token_type::TokenType}
 };
 
 use super::{stmt::Stmt, symbol::Symbol, r#type::Type};
@@ -275,7 +272,7 @@ impl Expr {
 
     fn unary(stream: &mut TokenStream) -> Result<Self, MGLError> {
         if stream.match_tokens(&[TokenType::Bang, TokenType::Minus]) {
-            let operator = stream.previous();
+            let operator = stream.previous().token_type;
             let expr = Self::unary(stream)?;
             return Ok(Self::Unary {
                 expr: Box::new(expr),
@@ -286,30 +283,19 @@ impl Expr {
         Self::primary(stream)
     }
 
-    /*fn call(&mut self, stream: &mut TokenStream) -> Result<Self, MGLError> {
-        let mut expr = Self::primary()?;
-        let token = Self::peek().clone();
+    fn call(stream: &mut TokenStream) -> Result<Self, MGLError> {
+        let expr = Box::new(Self::primary(stream)?);
 
-        loop {
-            if Self::match_tokens(&[TokenType::LeftParen]) {
-                return Self::finish_call(Box::new(expr), token.to_source_location());
-            } else if Self::match_tokens(&[TokenType::LeftBracket]) {
-                return Self::index(Box::new(expr), token.to_source_location());
-            } else if Self::match_tokens(&[TokenType::Dot]) {
-                let attr = self
-                    .consume_expected(TokenType::Identifier, '.', String::from("property name"))?
-                    .to_symbol();
-                expr = Self::Get {
-                    attr,
-                    lhs: Box::new(expr),
-                };
-            } else {
-                break;
-            }
+        if stream.match_tokens(&[TokenType::Dot]) {
+            let attr = stream.consume(TokenType::Ident, String::from("expected attribute after '.'"))?.into();
+            return Ok(Expr::Get { attr, lhs: expr });
         }
 
-        Ok(expr)
-    }*/
+        let arg = Box::new(Self::primary(stream)?);
+
+        let token = stream.peek();
+        Ok(Expr::Call { loc: token.into(), arg, callee: expr })
+    }
 
     /*fn array(&mut self, loc: SourceLocation) -> Result<Vec<Self>, MGLError> {
         let mut values = Vec::new();
@@ -331,8 +317,6 @@ impl Expr {
     }*/
 
     fn primary(stream: &mut TokenStream) -> Result<Self, MGLError> {
-        let (token, prev_token) = (stream.peek(), stream.previous());
-
         if stream.match_tokens(&[TokenType::While]) {
             return Ok(Self::While(WhileExpr::parse(stream)?));
         }
@@ -341,36 +325,32 @@ impl Expr {
             return Ok(Self::If(IfExpr::parse(stream)?));
         }
 
+        if stream.match_tokens(&[TokenType::Return]) {
+            return Ok(Self::Return { loc: stream.peek().into(), value: Box::new(Expr::parse(stream)?) });
+        }
+
         if stream.match_tokens(&[TokenType::False]) {
             let token = stream.peek();
             return Ok(Self::Literal {
-                lit: Value::Literal(Literal::Bool(false)),
-                loc: SourceLocation {
-                    line: token.line,
-                    col: token.col,
-                },
+                lit: Literal::Bool(false),
+                loc: token.into()
             });
         }
         if stream.match_tokens(&[TokenType::True]) {
             let token = stream.peek();
             return Ok(Self::Literal {
-                lit: Value::Literal(Literal::Bool(true)),
-                loc: SourceLocation {
-                    line: token.line,
-                    col: token.col,
-                },
+                lit: Literal::Bool(true),
+                loc: token.into()
             });
         }
 
         if stream.match_tokens(&[TokenType::Number, TokenType::String]) {
-            match prev.literal {
-                Some(lit) => {
+            let (token, prev_token) = (stream.peek(), stream.previous());
+            match prev_token.literal {
+                Some(ref lit) => {
                     return Ok(Self::Literal {
-                        lit,
-                        loc: SourceLocation {
-                            line: previous.line,
-                            col: previous.col,
-                        },
+                        lit: lit.clone(),
+                        loc: prev_token.into()
                     });
                 }
                 None => {
@@ -384,11 +364,11 @@ impl Expr {
         }
 
         if stream.match_tokens(&[TokenType::SelfTy]) {
-            return Ok(Self::This(prev_token.into()));
+            return Ok(Self::This(stream.previous().into()));
         }
 
         if stream.match_tokens(&[TokenType::Ident]) {
-            return Ok(Self::Var(prev_token.into()));
+            return Ok(Self::Var(stream.previous().into()));
         }
 
         if stream.match_tokens(&[TokenType::LeftParen]) {
@@ -405,7 +385,7 @@ impl Expr {
         Err(MGLError {
             error_type: ErrorType::SyntaxError,
             msg: String::from("Expect expression"),
-            loc: Some(token.into()),
+            loc: Some(stream.peek().into()),
         })
     }
 }
